@@ -347,6 +347,11 @@ LoopClearBss:
 
 RunMain:
     bl SystemInit
+
+    /* SystemCoreClock starts at its 64 MHz default, but SystemInit has set the
+     * PLL to 128 MHz. Correct it before global constructors can time anything. */
+    bl SystemCoreClockUpdate
+
     bl __libc_init_array
     cpsie i
     bl main
