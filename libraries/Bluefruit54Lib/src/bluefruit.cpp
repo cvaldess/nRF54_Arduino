@@ -666,6 +666,21 @@ extern "C" void SD_EVT_IRQHandler(void)
 #endif
 }
 
+// An unanswered seed request leaves the SoftDevice RNG unseeded, so the SOC task retries a failed seed
+// between event batches rather than inline, where it would hold up flash completions.
+static volatile bool _seed_pending = false;
+
+// The InternalFS flash driver drains the SoC event queue while it waits for a flash completion and
+// hands every other event to this hook, so a seed request it pulls out never reaches the SOC task
+// below: pass it on, waking the task through SD_EVT_IRQn. Weak: an application that reads the SoC
+// events itself can take them over.
+extern "C" __attribute__((weak)) void flash_nrf5x_soc_event_hook(uint32_t soc_evt)
+{
+  if ( soc_evt != NRF_EVT_RAND_SEED_REQUEST ) return;
+  _seed_pending = true;
+  NVIC_SetPendingIRQ(SD_EVT_IRQn);
+}
+
 /**
  * Handle SOC event such as FLASH operation
  */
@@ -673,15 +688,16 @@ void adafruit_soc_task(void* arg)
 {
   (void) arg;
 
-  // An unanswered seed request leaves the SoftDevice RNG unseeded, so a failed seed is retried between
-  // event batches rather than inline, where it would hold up flash completions.
-  bool seed_pending = false;
-
   while (1)
   {
-    if ( seed_pending ) seed_pending = !seed_softdevice_rng();
+    // Cleared first, so a request the flash hook passes on meanwhile is not lost
+    if ( _seed_pending )
+    {
+      _seed_pending = false;
+      if ( !seed_softdevice_rng() ) _seed_pending = true;
+    }
 
-    if ( xSemaphoreTake(Bluefruit._soc_event_sem, seed_pending ? pdMS_TO_TICKS(10) : portMAX_DELAY) )
+    if ( xSemaphoreTake(Bluefruit._soc_event_sem, _seed_pending ? pdMS_TO_TICKS(10) : portMAX_DELAY) )
     {
       uint32_t soc_evt;
       uint32_t err = ERROR_NONE;
@@ -701,7 +717,7 @@ void adafruit_soc_task(void* arg)
             break;
 
             case NRF_EVT_RAND_SEED_REQUEST:
-              seed_pending = true;
+              _seed_pending = true;
             break;
 
             default: break;

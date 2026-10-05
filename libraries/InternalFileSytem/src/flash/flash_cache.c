@@ -31,6 +31,9 @@
 //--------------------------------------------------------------------+
 // MACRO TYPEDEF CONSTANT ENUM DECLARATION
 //--------------------------------------------------------------------+
+// Failed flushes in a row after which the cached page is dropped
+#define FLASH_CACHE_MAX_FLUSH_FAILURES 3
+
 static inline uint32_t page_addr_of (uint32_t addr)
 {
   return addr & ~(FLASH_CACHE_SIZE - 1);
@@ -58,7 +61,8 @@ int flash_cache_write (flash_cache_t* fc, uint32_t dst, void const * src, uint32
     // Page changes, flush old and update new cache
     if ( page_addr != fc->cache_addr )
     {
-      flash_cache_flush(fc);
+      // The old page holds writes already reported as done: keep it cached rather than replace it
+      if ( !flash_cache_flush(fc) ) return -1;
       fc->cache_addr = page_addr;
 
       // read a whole page from flash
@@ -73,26 +77,51 @@ int flash_cache_write (flash_cache_t* fc, uint32_t dst, void const * src, uint32
     dst += wr_bytes;
   }
 
-  return len - remain;
+  return (int) (len - remain);
 }
 
-void flash_cache_flush (flash_cache_t* fc)
+bool flash_cache_flush (flash_cache_t* fc)
 {
-  if ( fc->cache_addr == FLASH_CACHE_INVALID_ADDR ) return;
+  if ( fc->cache_addr == FLASH_CACHE_INVALID_ADDR ) return true;
 
-  // skip erase & program if verify() exists, and memory matches
-  if ( !(fc->verify && fc->verify(fc->cache_addr, fc->cache_buf, FLASH_CACHE_SIZE)) )
+  uint32_t const page = fc->cache_addr;
+  bool ok = true;
+
+  // Written in place (RRAM): send only the chunks that differ from the flash. The rest of the
+  // page is never touched, so an interrupted flush can only damage the chunk in flight, not the
+  // other 15 LittleFS blocks sharing the page (with erase-then-program a hang mid-page left the
+  // whole page, superblocks included, at 0xFF).
+  bool led = false;
+
+  for ( uint32_t off = 0; off < FLASH_CACHE_SIZE; off += FLASH_CACHE_WRITE_CHUNK )
   {
-    // indicator TODO allow to disable flash indicator
-    ledOn(LED_BUILTIN);
+    if ( fc->verify && fc->verify(page + off, fc->cache_buf + off, FLASH_CACHE_WRITE_CHUNK) ) continue;
 
-    fc->erase(fc->cache_addr);
-    fc->program(fc->cache_addr, fc->cache_buf, FLASH_CACHE_SIZE);
+    if ( !led )
+    {
+      ledOn(LED_BUILTIN);
+      led = true;
+    }
 
-    ledOff(LED_BUILTIN);
+    if ( fc->program(page + off, fc->cache_buf + off, FLASH_CACHE_WRITE_CHUNK) != FLASH_CACHE_WRITE_CHUNK )
+    {
+      ok = false;
+      break;
+    }
   }
 
-  fc->cache_addr = FLASH_CACHE_INVALID_ADDR;
+  if ( led ) ledOff(LED_BUILTIN);
+
+  // On failure the page stays cached, so its data is neither lost nor read back stale, and the
+  // next flush writes it again (only the chunks that still differ). A page that keeps failing is
+  // given up, though: it would refuse every write to any other page, InternalFS.format()'s erases
+  // included, and its data does not survive a reboot anyway.
+  if ( ok || ++fc->flush_failures >= FLASH_CACHE_MAX_FLUSH_FAILURES )
+  {
+    fc->cache_addr = FLASH_CACHE_INVALID_ADDR;
+    fc->flush_failures = 0;
+  }
+  return ok;
 }
 
 int flash_cache_read (flash_cache_t* fc, void* dst, uint32_t addr, uint32_t count)

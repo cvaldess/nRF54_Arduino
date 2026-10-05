@@ -59,7 +59,9 @@ static int _internal_flash_prog (const struct lfs_config *c, lfs_block_t block, 
   (void) c;
 
   uint32_t addr = lba2addr(block) + off;
-  VERIFY( flash_nrf5x_write(addr, buffer, size), -1)
+  // A short or negative count means a page flush failed: tell LittleFS instead of pretending
+  // the block was programmed (it then reports the error to the caller and keeps the old state).
+  if ( flash_nrf5x_write(addr, buffer, size) != (int) size ) return LFS_ERR_IO;
 
   return 0;
 }
@@ -77,7 +79,8 @@ static int _internal_flash_erase (const struct lfs_config *c, lfs_block_t block)
   // implement as write 0xff to whole block address
   for(int i=0; i <LFS_BLOCK_SIZE; i++)
   {
-    flash_nrf5x_write8(addr + i, 0xFF);
+    // A failed page flush leaves the rest of the block unerased: report it, as prog does
+    if ( flash_nrf5x_write8(addr + i, 0xFF) != 1 ) return LFS_ERR_IO;
   }
 
   // flash_nrf5x_flush();
@@ -90,8 +93,7 @@ static int _internal_flash_erase (const struct lfs_config *c, lfs_block_t block)
 static int _internal_flash_sync (const struct lfs_config *c)
 {
   (void) c;
-  flash_nrf5x_flush();
-  return 0;
+  return flash_nrf5x_flush() ? 0 : LFS_ERR_IO;
 }
 
 

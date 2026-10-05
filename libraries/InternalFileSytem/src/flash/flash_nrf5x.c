@@ -43,52 +43,200 @@ extern uint32_t __flash_arduino_end[];
 static SemaphoreHandle_t _sem = NULL;
 static uint32_t _flash_op_result = NRF_EVT_FLASH_OPERATION_SUCCESS;
 
+// SoftDevice flash operations accepted, and completions seen for them. The SoftDevice runs one
+// operation at a time and reports each one in order, so every accepted operation has finished once
+// the two counts match; the semaphore only wakes the waiting task. Counting, instead of taking the
+// semaphore once per operation, keeps the completion of a write whose wait timed out from being
+// taken for the completion of the next one.
+static volatile uint32_t _ops_issued = 0;
+static volatile uint32_t _ops_completed = 0;
+
+flash_nrf5x_stats_t flash_nrf5x_stats;
+
+// The completion semaphore used to be created by fal_erase() only, which always ran before
+// fal_program(); with in-place writes a program can be the first operation, so create it here.
+static bool ensure_sem (void)
+{
+  if ( _sem == NULL ) {
+    _sem = xSemaphoreCreateBinary();
+  }
+  return _sem != NULL;
+}
+
+static void flash_op_completed (uint32_t event)
+{
+  // Record the result, for consumption by fal_erase or fal_program
+  // Used to reattempt failed operations
+  _flash_op_result = event;
+  __atomic_fetch_add(&_ops_completed, 1, __ATOMIC_SEQ_CST);
+}
+
 void flash_nrf5x_event_cb (uint32_t event)
 {
   if ( _sem ) {
-    // Record the result, for consumption by fal_erase or fal_program
-    // Used to reattempt failed operations
-    _flash_op_result = event;
+    flash_op_completed(event);
+    flash_nrf5x_stats.completed++;
 
     // Signal to fal_erase or fal_program that our async flash op is now complete
     xSemaphoreGive(_sem);
   }
 }
 
-// How many retry attempts when performing flash operations
+// Accepted operations whose completion has not been seen yet
+static uint32_t flash_ops_outstanding (void)
+{
+  taskENTER_CRITICAL();
+  int32_t n = (int32_t) (_ops_issued - _ops_completed);
+  // More completions than operations: one that sd_flash_write_wait() wrote off did report after all
+  if ( n < 0 ) {
+    _ops_completed = _ops_issued;
+    n = 0;
+  }
+  taskEXIT_CRITICAL();
+  return (uint32_t) n;
+}
+
+// How many times an operation the SoftDevice reports BUSY, or could not fit around the radio, is
+// re-issued (5 ms apart)
 #define MAX_RETRY 20
+// How many times an operation whose completion never arrived is re-issued
+#define MAX_TIMEOUT_RETRY 3
+
+// Total time one chunk may take, every attempt and wait included. The filesystem lock is held all
+// along, so this, not the number of attempts, is what bounds the stall.
+#define FLASH_NRF5X_CHUNK_BUDGET_MS 2000
+// Part of it that settling an operation left outstanding by a timeout may use
+#define FLASH_NRF5X_SETTLE_MS       500
+#define FLASH_NRF5X_WAIT_SLICE_MS   20
+
+// The SoftDevice reported NRF_EVT_FLASH_OPERATION_ERROR: it could not fit the write around radio
+// activity. Retried like BUSY, after a pause.
+#define FLASH_NRF5X_ERR_SD_FAILED   NRF_ERROR_INTERNAL
+
+static bool deadline_passed (TickType_t deadline)
+{
+  return (int32_t) (xTaskGetTickCount() - deadline) >= 0;
+}
+
+// Application hook for SoC events drained here that are not flash completions
+// (power-failure warning, RNG seed request, ...). Bluefruit54Lib provides a weak default that
+// answers the RNG seed request; an application can override it. Absent, they are dropped.
+void flash_nrf5x_soc_event_hook(uint32_t event) __attribute__((weak));
+
+// Pull the pending SoC events ourselves: flash completions are counted, the rest go to the hook
+static void drain_soc_events (void)
+{
+  uint32_t evt;
+  while (sd_evt_get(&evt) == NRF_SUCCESS) {
+    if (evt == NRF_EVT_FLASH_OPERATION_SUCCESS || evt == NRF_EVT_FLASH_OPERATION_ERROR) {
+      flash_op_completed(evt);
+      flash_nrf5x_stats.drained++;
+    } else if (flash_nrf5x_soc_event_hook) {
+      flash_nrf5x_soc_event_hook(evt);
+    }
+  }
+}
+
+// The write just issued has landed once dst reads back as src. flash_words_program() trims every
+// write to start and end on a word that differs from the flash, so a match means the SoftDevice has
+// written the range through its last word (it writes in address order) and is done reading src,
+// which the caller is about to reuse. The counts alone cannot prove it: a completion that
+// sd_flash_write_wait() wrote off as lost may still arrive and make them match early.
+static bool flash_write_landed (uint32_t dst, uint32_t const * src, uint32_t n_words)
+{
+  return src == NULL || memcmp((void const *) dst, src, n_words * 4) == 0;
+}
+
+typedef enum
+{
+  FLASH_WAIT_DONE,
+  FLASH_WAIT_FAILED,  // every completion is in, the last one reported a failure and the data is not there
+  FLASH_WAIT_TIMEOUT,
+} flash_wait_t;
+
+// Wait until every accepted operation has reported its completion and, when src is given, the write
+// just issued has landed; but never past the deadline: the SoC event normally arrives through the
+// SoftDevice event task, yet a lost event would otherwise park the calling task forever (seen on
+// nRF54L15 during a BLE connection: the whole firmware froze in an unbounded take here). Drain the
+// SoC event queue ourselves while waiting so the completion cannot get stuck behind a task that is
+// not running, and hand any other SoC event to the application hook.
+static flash_wait_t wait_flash_ops (TickType_t deadline, uint32_t dst, uint32_t const * src, uint32_t n_words)
+{
+  for (;;) {
+    if ( !flash_ops_outstanding() ) {
+      if ( flash_write_landed(dst, src, n_words) ) return FLASH_WAIT_DONE;
+      if ( _flash_op_result == NRF_EVT_FLASH_OPERATION_ERROR ) return FLASH_WAIT_FAILED;
+    }
+    if ( deadline_passed(deadline) ) return FLASH_WAIT_TIMEOUT;
+    // Only a wake-up: a give left by a completion counted earlier costs one more pass
+    if (xSemaphoreTake(_sem, pdMS_TO_TICKS(FLASH_NRF5X_WAIT_SLICE_MS)) == pdTRUE) continue;
+    drain_soc_events();
+  }
+}
+
+// Set once settling an outstanding write timed out, so the retries after BUSY do not wait again
+static bool _settle_given_up = false;
 
 // When soft device is enabled, flash ops are async
 // Eventual success is reported via callback, which we await
-static uint32_t wait_for_async_flash_op_completion(uint32_t initial_result)
+static uint32_t sd_flash_write_wait (TickType_t deadline, uint32_t dst, uint32_t const * src, uint32_t n_words)
 {
-  // If initial result not NRF_SUCCESS, no need to await callback
-  // We will pass the initial result (failure) straight through
-  int32_t result = initial_result;
+  flash_nrf5x_stats.in_flight = 1;
 
-  // Operation was queued successfully
-  if (initial_result == NRF_SUCCESS) {
-
-    // Wait for result via callback
-    xSemaphoreTake(_sem, portMAX_DELAY);
-
-    // If completed successfully
-    if (_flash_op_result == NRF_EVT_FLASH_OPERATION_SUCCESS) {
-      result = NRF_SUCCESS;
-    }
-
-    // If general failure.
-    else if (_flash_op_result == NRF_EVT_FLASH_OPERATION_ERROR) {
-      result = NRF_ERROR_TIMEOUT;
-    }
-
-    // If this assert triggers, we need to implement a new NRF_SOC_EVTS value
-    else {
-      assert(false);
+  // A write whose wait timed out may still be running, or its completion may still be on its way:
+  // settle it first, so that completion cannot be taken for the one of the write issued here.
+  uint32_t owed = flash_ops_outstanding();
+  if (owed) {
+    TickType_t settle_deadline = xTaskGetTickCount() + pdMS_TO_TICKS(FLASH_NRF5X_SETTLE_MS);
+    if ((int32_t) (settle_deadline - deadline) > 0) settle_deadline = deadline;
+    if (!_settle_given_up && wait_flash_ops(settle_deadline, 0, NULL, 0) == FLASH_WAIT_DONE) {
+      owed = 0;
+    } else {
+      // Settling timed out, now or before a BUSY retry: take only what is already queued
+      drain_soc_events();
+      owed = flash_ops_outstanding();
+      _settle_given_up = true;
     }
   }
 
-  return result;
+  // Counted before the call: the completion can arrive before sd_flash_write() returns
+  _ops_issued++;
+  uint32_t result = sd_flash_write((uint32_t*) dst, src, n_words);
+
+  // Not queued (BUSY while an earlier write still runs, or a real error): no completion will follow
+  if (result != NRF_SUCCESS) {
+    _ops_issued--;
+    flash_nrf5x_stats.in_flight = 0;
+    return result;
+  }
+
+  _settle_given_up = false;
+  if (owed) {
+    // Accepted, so the earlier writes are finished, since the SoftDevice runs one at a time: another
+    // reader of the SoC event queue most likely took their completions without passing them on.
+    // Write them off. One that was only late may still arrive and make the counts match early,
+    // which is why the wait below also requires the data to have landed.
+    __atomic_fetch_add(&_ops_completed, owed, __ATOMIC_SEQ_CST);
+    flash_nrf5x_stats.written_off += owed;
+  }
+
+  flash_wait_t const waited = wait_flash_ops(deadline, dst, src, n_words);
+  flash_nrf5x_stats.in_flight = 0;
+  if (waited == FLASH_WAIT_TIMEOUT) {
+    // Left outstanding: the next write settles it before it is issued
+    flash_nrf5x_stats.timeouts++;
+    return NRF_ERROR_TIMEOUT;
+  }
+
+  if (waited == FLASH_WAIT_FAILED) {
+    return FLASH_NRF5X_ERR_SD_FAILED;
+  }
+
+  flash_nrf5x_stats.last_ticks = xTaskGetTickCount() - flash_nrf5x_stats.last_start;
+  if (flash_nrf5x_stats.last_ticks > flash_nrf5x_stats.max_ticks) {
+    flash_nrf5x_stats.max_ticks = flash_nrf5x_stats.last_ticks;
+  }
+  return NRF_SUCCESS;
 }
 
 // sd_flash_write() is a SoftDevice SVC; without the SoftDevice the RRAM controller is driven directly.
@@ -107,10 +255,62 @@ static uint32_t rram_write(uint32_t dst, uint32_t const * src, uint32_t n_words)
   return NRF_SUCCESS;
 }
 
-static uint32_t flash_words_write(bool sd_en, uint32_t dst, uint32_t const * src, uint32_t n_words)
+static uint32_t flash_words_write(bool sd_en, uint32_t dst, uint32_t const * src, uint32_t n_words, TickType_t deadline)
 {
-  if ( !sd_en ) return rram_write(dst, src, n_words);
-  return wait_for_async_flash_op_completion(sd_flash_write((uint32_t*) dst, src, n_words));
+  flash_nrf5x_stats.ops++;
+  flash_nrf5x_stats.last_addr  = dst;
+  flash_nrf5x_stats.last_words = n_words;
+  flash_nrf5x_stats.last_start = xTaskGetTickCount();
+
+  uint32_t result;
+  if ( !sd_en ) {
+    result = rram_write(dst, src, n_words);
+  } else {
+    result = sd_flash_write_wait(deadline, dst, src, n_words);
+  }
+
+  flash_nrf5x_stats.last_result = result;
+  if ( result != NRF_SUCCESS && result != NRF_ERROR_TIMEOUT ) {
+    flash_nrf5x_stats.errors++;
+  }
+  return result;
+}
+
+// One flash operation with the retry policy, within FLASH_NRF5X_CHUNK_BUDGET_MS in total: BUSY (a
+// previous operation may still be running inside the SoftDevice) and a SoftDevice-reported failure
+// (no room around the radio) are re-issued after a short pause, a lost completion is re-issued a few
+// times, any other error is final because it will not fix itself (bad address, forbidden area).
+static uint32_t flash_words_write_retry(bool sd_en, uint32_t dst, uint32_t const * src, uint32_t n_words)
+{
+  TickType_t const deadline = xTaskGetTickCount() + pdMS_TO_TICKS(FLASH_NRF5X_CHUNK_BUDGET_MS);
+  uint32_t err;
+  uint8_t retries = 0, timeouts = 0;
+
+  for (;;) {
+    err = flash_words_write(sd_en, dst, src, n_words, deadline);
+    if ( err == NRF_SUCCESS || deadline_passed(deadline) ) return err;
+    if ( (err == NRF_ERROR_BUSY || err == FLASH_NRF5X_ERR_SD_FAILED) && ++retries < MAX_RETRY ) {
+      delay(5);
+      continue;
+    }
+    if ( err == NRF_ERROR_TIMEOUT && ++timeouts < MAX_TIMEOUT_RETRY ) continue;
+    return err;
+  }
+}
+
+// Write only the words that differ from the flash, from the first to the last one. Besides sparing
+// the RRAM, every write then starts and ends on a word it changes, which is what lets the data check
+// in wait_flash_ops() vouch for it; a range already in place is not written at all.
+static uint32_t flash_words_program(bool sd_en, uint32_t dst, uint32_t const * src, uint32_t n_words)
+{
+  uint32_t const * flash = (uint32_t const *) dst;
+  uint32_t first = 0, last = n_words;
+
+  while ( first < n_words && flash[first] == src[first] ) first++;
+  if ( first == n_words ) return NRF_SUCCESS;
+  while ( flash[last - 1] == src[last - 1] ) last--;
+
+  return flash_words_write_retry(sd_en, dst + 4 * first, src + first, last - first);
 }
 
 // Flash Abstraction Layer
@@ -123,7 +323,8 @@ static uint8_t _cache_buffer[FLASH_CACHE_SIZE] __attribute__((aligned(4)));
 
 static flash_cache_t _cache =
 {
-  .erase      = fal_erase,
+  // RRAM is written in place: the cache flushes only the chunks that changed.
+  // fal_erase stays available through flash_nrf5x_erase() for the filesystem format path.
   .program    = fal_program,
   .read       = fal_read,
   .verify     = fal_verify,
@@ -135,9 +336,11 @@ static flash_cache_t _cache =
 //--------------------------------------------------------------------+
 // Application API
 //--------------------------------------------------------------------+
-void flash_nrf5x_flush (void)
+bool flash_nrf5x_flush (void)
 {
-  flash_cache_flush(&_cache);
+  bool ok = flash_cache_flush(&_cache);
+  if ( !ok ) flash_nrf5x_stats.flush_failed++;
+  return ok;
 }
 
 int flash_nrf5x_write (uint32_t dst, void const * src, uint32_t len)
@@ -171,11 +374,7 @@ bool flash_nrf5x_erase(uint32_t addr)
 // writing 0xFF to the entire page via sd_flash_write.
 static bool fal_erase (uint32_t addr)
 {
-  // Init semaphore for first call
-  if ( _sem == NULL ) {
-    _sem = xSemaphoreCreateBinary();
-    VERIFY(_sem);
-  }
+  VERIFY(ensure_sem());
 
   uint8_t sd_en = 0;
   (void) sd_softdevice_is_enabled(&sd_en);
@@ -192,18 +391,8 @@ static bool fal_erase (uint32_t addr)
   while (remaining > 0)
   {
     uint32_t wr_bytes = (remaining < chunk_bytes) ? remaining : chunk_bytes;
-    uint32_t err;
 
-    for (uint8_t attempt = 0; attempt < MAX_RETRY; ++attempt) {
-      err = flash_words_write(sd_en, dst, ff_buf, wr_bytes / 4);
-      if (err == NRF_SUCCESS) {
-        break;
-      }
-      if (err == NRF_ERROR_BUSY) {
-        delay(1);
-      }
-    }
-    VERIFY_STATUS(err, false);
+    VERIFY_STATUS(flash_words_program(sd_en, dst, ff_buf, wr_bytes / 4), false);
 
     dst += wr_bytes;
     remaining -= wr_bytes;
@@ -214,38 +403,28 @@ static bool fal_erase (uint32_t addr)
 
 static uint32_t fal_program (uint32_t dst, void const * src, uint32_t len)
 {
+  VERIFY(ensure_sem(), 0);
+
   // wait for async event if SD is enabled
   uint8_t sd_en = 0;
   (void) sd_softdevice_is_enabled(&sd_en);
 
-  uint32_t err;
+  // Written in slices no larger than the RRAMC write buffer; the cache normally hands over one
+  // FLASH_CACHE_WRITE_CHUNK at a time, the format path a whole page.
+  uint8_t const * src8 = (uint8_t const *) src;
+  uint32_t const chunk_bytes = FLASH_CACHE_WRITE_CHUNK;
+  uint32_t written = 0;
 
-  // Write in two halves to avoid potential SoftDevice issues with large writes
-  // Write first half
-  for (uint8_t attempt = 0; attempt < MAX_RETRY; ++attempt) {
-    err = flash_words_write(sd_en, dst, (uint32_t const *) src, len/8);
-    if (err == NRF_SUCCESS) {
-      break;
-    }
-    if (err == NRF_ERROR_BUSY) {
-      delay(1);
-    }
+  while (written < len)
+  {
+    uint32_t wr_bytes = (len - written < chunk_bytes) ? (len - written) : chunk_bytes;
+
+    VERIFY_STATUS(flash_words_program(sd_en, dst + written, (uint32_t const *) (src8 + written), wr_bytes / 4), written);
+
+    written += wr_bytes;
   }
-  VERIFY_STATUS(err, 0);
 
-  // Write second half
-  for (uint8_t attempt = 0; attempt < MAX_RETRY; ++attempt) {
-    err = flash_words_write(sd_en, dst + len/2, (uint32_t const *) (src + len/2), len/8);
-    if (err == NRF_SUCCESS) {
-      break;
-    }
-    if (err == NRF_ERROR_BUSY) {
-      delay(1);
-    }
-  }
-  VERIFY_STATUS(err, 0);
-
-  return len;
+  return written;
 }
 
 static uint32_t fal_read (void* dst, uint32_t src, uint32_t len)
