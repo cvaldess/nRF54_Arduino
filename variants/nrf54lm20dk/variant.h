@@ -79,7 +79,7 @@ extern "C"
 #define PIN_BUTTON4          (5)
 
 // Analog: AIN0..AIN7 = P1.00, P1.31, P1.30, P1.29, P1.06, P1.05, P1.04, P1.03
-// (the chip's SAADC mapping, as in the xiao_nrf54lm20a variant)
+// (nRF54LM20 datasheet v1.0, CSP98 pin assignments)
 #define PIN_A0               (32)
 #define PIN_A1               (63)
 #define PIN_A2               (62)
