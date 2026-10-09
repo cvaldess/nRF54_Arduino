@@ -47,7 +47,9 @@ extern "C"
  *   SERIAL00 (UARTE00/SPIM00) -> P2, SERIAL2x -> P1 and P3, SERIAL30 -> P0.
  * Pin interrupts: P0 -> GPIOTE30 (4 channels), P1 and P3 -> GPIOTE20 (8 channels), P2 none.
  *
- * LEDs, buttons, VCOM and the MX25R64 pins come from Zephyr's boards/nordic/nrf54lm20dk.
+ * LEDs, buttons, VCOM and the MX25R64 pins: nRF54LM20 DK User Guide v1.0.2 (2.3-2.5, 3.1.2).
+ * Not free by default: P1.01/P1.02 (NFC), P1.20/P1.21 (32.768 kHz crystal), P2.00-P2.05 (MX25R64,
+ * switchable to the headers by the board controller), P2.06-P2.10 (trace).
  */
 
 // Number of pins defined in PinDescription array
@@ -129,9 +131,7 @@ static const uint8_t MISO = PIN_SPI_MISO;
 static const uint8_t SCK  = PIN_SPI_SCK;
 
 /*
- * Wire Interfaces (TWIM30 on P0.03/P0.04, expansion header pins 8 and 9)
- *
- * TODO: check against the nRF54LM20 DK user guide which header pins it labels SDA/SCL.
+ * Wire Interfaces (TWIM30 on P0.03/P0.04: header P1 and the expansion header; the DK labels no I2C pins)
  */
 #define WIRE_INTERFACES_COUNT 1
 
