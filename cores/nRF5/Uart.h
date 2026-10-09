@@ -90,8 +90,15 @@ class Uart : public HardwareSerial
 //
 // SERIAL_PORT_HARDWARE_OPEN  Hardware serial ports which are open for use.  Their RX & TX
 //                            pins are NOT connected to anything by default.
-// nRF54L has no USB — Serial1 (UART) is the only serial port
-#define SERIAL_PORT_MONITOR         Serial1
+// nRF54L has no USB peripheral, so the "console" is whichever UART a board
+// routes to its host connection. Defaults to Serial1; a variant whose
+// host-facing serial bridge hangs off a different UART overrides
+// SERIAL_PORT_CONSOLE in its variant.h (included at the top of this header).
+#ifndef SERIAL_PORT_CONSOLE
+  #define SERIAL_PORT_CONSOLE       Serial1
+#endif
+
+#define SERIAL_PORT_MONITOR         SERIAL_PORT_CONSOLE
 #define SERIAL_PORT_HARDWARE        Serial1
 #define SERIAL_PORT_HARDWARE_OPEN   Serial1
 
@@ -102,6 +109,6 @@ extern Uart Serial2;
 #endif
 
 // On nRF52 BSPs the plain `Serial` symbol is the USB CDC port; nRF54L has
-// no USB peripheral, so map `Serial` onto `Serial1` (the primary UART)
-// so existing Arduino sketches that print to `Serial` keep working.
-#define Serial Serial1
+// no USB peripheral, so map `Serial` onto the console UART so existing
+// Arduino sketches that print to `Serial` keep working.
+#define Serial SERIAL_PORT_CONSOLE

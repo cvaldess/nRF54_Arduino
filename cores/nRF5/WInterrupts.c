@@ -55,12 +55,16 @@ typedef struct {
 static gpiote_instance_t gpiote20 = { NRF_GPIOTE20, GPIOTE20_IRQn_GRP, 8, false, {0}, {0}, {0} };
 static gpiote_instance_t gpiote30 = { NRF_GPIOTE30, GPIOTE30_IRQn_GRP, 4, false, {0}, {0}, {0} };
 
-/* Pick the GPIOTE that can see this GPIO pin, or NULL when none can (P2). */
+/* Pick the GPIOTE that can see this GPIO pin, or NULL when none can (P2). The nRF54LM20 adds P3,
+ * which shares GPIOTE20 with P1 (gpiote-instance in Zephyr's nrf54lm20_a_b.dtsi). */
 static gpiote_instance_t *instanceForPin(uint32_t pin)
 {
   switch (pin >> 5) {
     case 0:  return &gpiote30;
     case 1:  return &gpiote20;
+#if defined(NRF_P3_S_BASE)
+    case 3:  return &gpiote20;
+#endif
     default: return NULL;
   }
 }

@@ -56,8 +56,15 @@ extern uint32_t millis( void ) ;
 static inline uint32_t micros( void ) __attribute__((always_inline));
 static inline uint32_t micros( void )
 {
-  // Use DWT cycle count if it is enabled, otherwise use rtos tick
-  return dwt_enabled() ? (DWT->CYCCNT / 64) : tick2us(xTaskGetTickCount());
+  // Use DWT cycle count if it is enabled, otherwise use rtos tick.
+  // The divisor has to be the frequency the core is actually running at, not
+  // a constant: nRF54L boots at 128 MHz unless NRF_CONFIG_CPU_FREQ_MHZ says
+  // otherwise, and a hardcoded 64 made this return twice the elapsed time.
+  // Nothing in the core calls dwt_enable(), so as shipped this always takes
+  // the tick branch and resolves to 1 ms. The divisor only starts to matter
+  // once a sketch turns the cycle counter on for itself.
+  return dwt_enabled() ? (DWT->CYCCNT / (SystemCoreClock / 1000000UL))
+                       : tick2us(xTaskGetTickCount());
 }
 
 /**
@@ -76,7 +83,7 @@ extern void delay( uint32_t dwMs );
 static __inline__ void delayMicroseconds( uint32_t ) __attribute__((always_inline, unused)) ;
 static __inline__ void delayMicroseconds( uint32_t usec )
 {
-  nrfx_coredep_delay_us(usec);
+  nrf54_delay_us(usec);
 }
 
 /**

@@ -186,7 +186,15 @@
 #define NRFX_CRACEN_ENABLED                         1
 #define NRFX_DPPI_ENABLED                           1
 #define NRFX_EGU_ENABLED                            1
+// I2S exists on nRF54L05/L10/L15 but not on nRF54LM20A: its MDK headers
+// declare no NRF_I2S_Type and no I2S20_IRQn, so nrf_i2s.h fails to compile
+// ("unknown type name 'NRF_I2S_Type'"). Keep the driver on where the
+// peripheral actually exists.
+#if defined(NRF54LM20A_XXAA)
+#define NRFX_I2S_ENABLED                            0
+#else
 #define NRFX_I2S_ENABLED                            1
+#endif
 #define NRFX_KMU_ENABLED                            1
 #define NRFX_LPCOMP_ENABLED                         1
 #define NRFX_NFCT_ENABLED                           1

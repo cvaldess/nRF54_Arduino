@@ -3,6 +3,11 @@
  * The SoftDevice-owned vectors (SVC, SWI00, AAR00_CCM00, ECB00, TIMER10, RADIO_0, GRTC_3, CLOCK_POWER)
  * are overridden by nordic/sd_isr.S. */
 
+/* The platform builds all of cores/nRF5 as one library, so every startup
+ * file here is assembled for every target. Only one may contribute a
+ * vector table. */
+#if defined(NRF54L05_XXAA) || defined(NRF54L10_XXAA) || defined(NRF54L15_XXAA)
+
     .syntax unified
     .arch armv8-m.main
     .thumb
@@ -347,6 +352,24 @@ LoopClearBss:
 
 RunMain:
     bl SystemInit
+
+    /* Publish the frequency SystemInit actually selected.
+     *
+     * SystemCoreClock is a .data variable initialised to
+     * __SYSTEM_CLOCK_DEFAULT (64 MHz), and nothing in the MDK ever corrects
+     * it, but SystemInit programs OSCILLATORS.PLL.FREQ to 128 MHz unless
+     * NRF_CONFIG_CPU_FREQ_MHZ says otherwise. Everything that derives a time
+     * from a cycle count -- micros(), delayMicroseconds() -- was therefore
+     * working from a figure that is half the real one.
+     *
+     * SystemCoreClockUpdate() reads PLL.CURRENTFREQ, so it has to run after
+     * SystemInit has set PLL.FREQ, and it has to run before
+     * __libc_init_array so a global constructor that delays gets the right
+     * answer too. .data is already copied at this point, so the value sticks.
+     * The MDK's system_nrf54l.c provides the function; the weak stub at the
+     * end of this file covers a build without it. */
+    bl SystemCoreClockUpdate
+
     bl __libc_init_array
     cpsie i
     bl main
@@ -446,4 +469,12 @@ SystemInit:
     bx lr
     .size SystemInit, .-SystemInit
 
+    .weak SystemCoreClockUpdate
+    .type SystemCoreClockUpdate, %function
+SystemCoreClockUpdate:
+    bx lr
+    .size SystemCoreClockUpdate, .-SystemCoreClockUpdate
+
     .end
+
+#endif

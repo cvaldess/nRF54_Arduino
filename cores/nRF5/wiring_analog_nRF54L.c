@@ -49,7 +49,10 @@ extern "C" {
  *         Gain1   (1.0)    -> 0..0.9 V
  *         Gain2   (2.0)    -> 0..0.45 V
  *
- *   - TACQ is now a literal microsecond count (1..319), not an enum.
+ *   - TACQ is no longer a 3/5/10/15/20/40 us enum. CH[n].CONFIG.TACQ is a
+ *     count of 125 ns steps: acquisition time = (TACQ + 1) x 125 ns, for
+ *     TACQ = 1..0x13F (SAADC_CH_CONFIG_TACQ_Min/Max), i.e. 250 ns..40 us.
+ *     analogSampleTime() keeps taking microseconds and converts.
  *
  *   - RESULT.MAXCNT is now in BYTES, not 16-bit samples. For a single
  *     sample we must write sizeof(int16_t) = 2 here, not 1.
@@ -61,8 +64,14 @@ extern "C" {
 
 static uint32_t saadcReference = SAADC_CH_CONFIG_REFSEL_Internal;
 static uint32_t saadcGain      = SAADC_CH_CONFIG_GAIN_Gain2_8;
-// TACQ is a literal microsecond count on nRF54L; default 3 us.
-static uint32_t saadcSampleTime = 3;
+// CH[n].CONFIG.TACQ for an acquisition time in whole microseconds:
+// (TACQ + 1) x 125 ns = us  =>  TACQ = us * 8 - 1.
+#define TACQ_FROM_US(us)     ((uint32_t)(us) * 8UL - 1UL)
+// 3 us, the nRF52 core's default, for low-impedance sources (the nRF52 PS
+// rates 3 us for up to 10 kohm). A high-impedance source such as a battery
+// divider wants analogSampleTime(40).
+#define SAMPLE_TIME_DEFAULT_US  3
+static uint32_t saadcTacq = TACQ_FROM_US(SAMPLE_TIME_DEFAULT_US);
 static bool     saadcBurst     = false;
 
 static int readResolution = 10;
@@ -123,11 +132,12 @@ void analogOversampling( uint32_t ulOversampling )
 
 void analogSampleTime( uint8_t sTime )
 {
-  // Clamp into the hardware-supported range. TACQ is now a literal
-  // microsecond count, so the legacy 3/5/10/15/20/40 values pass through.
-  if (sTime < 1)   sTime = 3;
-  if (sTime > 40)  sTime = 40;
-  saadcSampleTime = sTime;
+  // sTime is in microseconds, as on nRF52, so the legacy 3/5/10/15/20/40
+  // values keep their meaning; any whole value in between works too. 0 picks
+  // the default, and anything past 40 us clamps to TACQ_Max (= 40 us).
+  uint32_t tacq = TACQ_FROM_US(sTime ? sTime : SAMPLE_TIME_DEFAULT_US);
+  if (tacq > SAADC_CH_CONFIG_TACQ_Max) tacq = SAADC_CH_CONFIG_TACQ_Max;
+  saadcTacq = tacq;
 }
 
 static uint32_t analogRead_internal( uint32_t pselp )
@@ -153,18 +163,27 @@ static uint32_t analogRead_internal( uint32_t pselp )
     NRF_SAADC->CH[i].PSELP = (SAADC_CH_PSELP_CONNECT_NC << SAADC_CH_PSELP_CONNECT_Pos);
   }
 
-  uint32_t burst_field = saadcBurst
-      ? SAADC_CH_CONFIG_BURST_Enabled
-      : SAADC_CH_CONFIG_BURST_Disabled;
-
   // nRF54L SAADC CH.CONFIG drops the RESP/RESN pull-resistor fields that
-  // nRF52 had; remaining fields are GAIN, BURST, REFSEL, MODE, TACQ, TCONV.
+  // nRF52 had; remaining fields are GAIN, REFSEL, MODE, TACQ, TCONV, plus
+  // BURST on the chips that keep it per-channel.
   NRF_SAADC->CH[0].CONFIG =
         ((saadcGain                      << SAADC_CH_CONFIG_GAIN_Pos)   & SAADC_CH_CONFIG_GAIN_Msk)
       | ((saadcReference                 << SAADC_CH_CONFIG_REFSEL_Pos) & SAADC_CH_CONFIG_REFSEL_Msk)
-      | ((saadcSampleTime                << SAADC_CH_CONFIG_TACQ_Pos)   & SAADC_CH_CONFIG_TACQ_Msk)
+      | ((saadcTacq                      << SAADC_CH_CONFIG_TACQ_Pos)   & SAADC_CH_CONFIG_TACQ_Msk)
       | ((SAADC_CH_CONFIG_MODE_SE        << SAADC_CH_CONFIG_MODE_Pos)   & SAADC_CH_CONFIG_MODE_Msk)
-      | ((burst_field                    << SAADC_CH_CONFIG_BURST_Pos)  & SAADC_CH_CONFIG_BURST_Msk);
+#if defined(SAADC_CH_CONFIG_BURST_Msk)
+      | (((saadcBurst ? SAADC_CH_CONFIG_BURST_Enabled : SAADC_CH_CONFIG_BURST_Disabled)
+                                         << SAADC_CH_CONFIG_BURST_Pos)  & SAADC_CH_CONFIG_BURST_Msk)
+#endif
+      ;
+
+#if defined(SAADC_BURST_BURST_Msk)
+  // The nRF54LM20A moved burst out of CH[n].CONFIG into a peripheral-level
+  // register; the feature is the same (take 2^OVERSAMPLE samples per
+  // TASKS_SAMPLE and average them), only the location changed.
+  NRF_SAADC->BURST = saadcBurst ? SAADC_BURST_BURST_Enabled
+                                : SAADC_BURST_BURST_Disabled;
+#endif
 
   // Single-ended: negative input is NC, positive input is the caller's pselp.
   NRF_SAADC->CH[0].PSELN = (SAADC_CH_PSELP_CONNECT_NC << SAADC_CH_PSELP_CONNECT_Pos);

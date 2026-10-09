@@ -2,9 +2,9 @@
 
 ## What this repo is
 
-Arduino BSP for **Nordic nRF54L05 / nRF54L10 / nRF54L15** with the
-**s145 SoftDevice v9.0.0**. Derived from `Adafruit_nRF52_Arduino` and
-reworked for nRF54L peripherals.
+Arduino BSP for **Nordic nRF54L05 / nRF54L10 / nRF54L15 / nRF54LM20A**
+with the **s145 SoftDevice v10.0.1**. Derived from
+`Adafruit_nRF52_Arduino` and reworked for nRF54L peripherals.
 
 **PlatformIO only.** Consumed exclusively through
 [meshtastic/platform-nordicnrf54](https://github.com/meshtastic/platform-nordicnrf54).
@@ -102,8 +102,10 @@ against them — the linker eliminates unused code via `--gc-sections`.
 The nRF54L SAADC implementation lives in
 `cores/nRF5/wiring_analog_nRF54L.c`. nRF54L's SAADC differs from nRF52
 in five ways: 0.9 V internal reference (not 0.6 V), multiplier gain
-enum (`Gain2_8` = 2/8, not `Gain1_6` = 1/6), microsecond TACQ count
-(not enum), byte-count `MAXCNT` (not sample count), structured PSELP
+enum (`Gain2_8` = 2/8, not `Gain1_6` = 1/6), TACQ as a count of 125 ns
+steps (`(TACQ + 1) x 125 ns`, not a microsecond enum; `analogSampleTime()`
+still takes microseconds and converts), byte-count `MAXCNT` (not sample
+count), structured PSELP
 (`CONNECT | PORT | PIN`, not `AnalogInput0..7`). Don't try to merge
 the two — they're genuinely different peripherals.
 
@@ -120,17 +122,44 @@ call. Nothing in the vector table may shadow the forwarded entries.
 
 `cores/nRF5/linker/nrf54_common.ld` defines `__flash_arduino_start` and
 `__flash_arduino_end` so InternalFS / `flash_nrf5x.c` work
-chip-independently. Per-chip values (from `nrf54l<chip>_s145_v9.ld`):
+chip-independently, and `__bootloader_peer_data` (`ORIGIN(NOINIT)`) for
+`BLEDfu.cpp`. Each chip script sets `__flash_arduino_size` and
+`__softdevice_start__`. Per-chip values (from `nrf54l<chip>_s145_v10.ld` and
+`nrf54lm20a_s145_v10.ld`):
 
 | Chip | App FLASH | InternalFS | DFU settings page | SoftDevice |
 |---|---|---|---|---|
-| nRF54L05 | `0x8000 – 0x47000` | `0x47000 – 0x4E000` | `0x4F000` | `0x58C00` |
-| nRF54L10 | `0x8000 – 0xC7000` | `0xC7000 – 0xCE000` | `0xCF000` | `0xD8C00` |
-| nRF54L15 | `0x8000 – 0x147000` | `0x147000 – 0x14E000` | `0x14F000` | `0x158C00` |
+| nRF54L05 | `0x8000 – 0x47000` | `0x47000 – 0x4E000` | `0x4F000` | `0x5A800` |
+| nRF54L10 | `0x8000 – 0xC7000` | `0xC7000 – 0xCE000` | `0xCF000` | `0xDA800` |
+| nRF54L15 | `0x8000 – 0x147000` | `0x147000 – 0x14E000` | `0x14F000` | `0x15A800` |
+| nRF54LM20A | `0x8000 – 0x1C9000` | `0x1C9000 – 0x1D1000` | `0x1D1000` | `0x1DA800` |
 
 RAM ends at `0x2003FF80`; the bootloader keeps its BLE peer data and the
 double-reset marker in the last 128 bytes. Both sides must agree, so change
 the layout in the bootloader repo's `linker/` scripts in the same step.
+
+### SoftDevice files are split by SoC family, not by SoC
+
+`sdk-nrf-bm` ships s145 under a per-family directory (`nrf54l`, `nrf54lm`,
+`nrf54ls`, `nrf54lv`) holding one API header set and one hex per SoC in
+that family, and this tree mirrors that:
+
+```
+cores/nRF5/nordic/softdevice/s145_nrf54l_10.0.1_API/   L05 / L10 / L15
+cores/nRF5/nordic/softdevice/s145_nrf54lm_10.0.1_API/  LM20A
+bootloader/s145/10.0.1/nrf54l/s145_nrf54l{05,10,15}_10.0.1_softdevice.hex
+bootloader/s145/10.0.1/nrf54lm/s145_nrf54lm20_10.0.1_softdevice.hex
+```
+
+The board JSON picks the family with `build.softdevice.sd_family` and the
+hex with `build.softdevice.sd_soc`; `build.mcu` names the real part
+(`nrf54lm20a`) and no longer feeds either path.
+
+The two API header sets are **byte-identical** upstream and here, so a fix
+to one (`nrf_nvic.h` is a hand-written shim, not a Nordic file) has to be
+applied to the other or they silently disagree. Keep them in sync rather
+than letting them diverge; only re-vendoring from a newer `sdk-nrf-bm` may
+legitimately split them apart.
 
 ### XIAO Wire routes to TWIM22
 
@@ -167,7 +196,7 @@ cores/nRF5/                  - core sources (Arduino API + FreeRTOS port + nrfx 
     nrfx/                    - upstream Nordic nrfx (mostly dead via guards)
       drivers/src/*.c        - all wrapped in #if NRFX_<X>_ENABLED
     nrfx_config.h            - one place to flip drivers on/off
-    softdevice/s145_nrf54l_9.0.0_API/  - SoftDevice headers
+    softdevice/s145_nrf54l{,m}_10.0.1_API/ - SoftDevice headers, per SoC family
 libraries/                   - PIO LDF-discovered bundled libs
   Bluefruit54Lib             - BLE API on top of s145
   nRF54Crypto                - CRACEN + TinyCrypt for LESC (replaces CC310)
@@ -177,7 +206,8 @@ libraries/                   - PIO LDF-discovered bundled libs
 variants/                    - per-board pin tables
   xiao_nrf54l15(_sense)
   nrf54l05dk / nrf54l10dk / nrf54l15dk
-bootloader/s145/9.0.0/       - SoftDevice hex (bootloader hex lives in nRF54_Bootloader)
+bootloader/s145/10.0.1/      - SoftDevice hex under nrf54l/ and nrf54lm/
+                               (bootloader hex lives in nRF54_Bootloader)
 tests/blink/                 - CI smoke test
 .github/workflows/githubci.yml  - PIO matrix build for all 5 variants
 ```

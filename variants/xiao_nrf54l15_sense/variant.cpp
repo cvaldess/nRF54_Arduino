@@ -23,7 +23,7 @@ const uint32_t g_ADigitalPinMap[] =
   38,   // D2  = P1.06
   39,   // D3  = P1.07
   42,   // D4  = P1.10 (SDA)
-  43,   // D5  = P1.11 (SCL)
+  43,   // D5  = P1.11 (SCL, A4)
 
   // D6..D10: header pins (P2 port)
   72,   // D6  = P2.08 (TX)
@@ -48,6 +48,9 @@ const uint32_t g_ADigitalPinMap[] =
   67,   // 21 = RF_SW = P2.03
   69,   // 22 = RF_SW_CTL = P2.05
   47,   // 23 = VBAT_EN = P1.15
+  46,   // 24 = VBAT_READ = P1.14 (AIN7)
+  44,   // 25 = PDM_CLK = P1.12 (AIN5)
+  45,   // 26 = PDM_DIN = P1.13 (AIN6)
 };
 
 

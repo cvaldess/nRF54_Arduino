@@ -50,6 +50,18 @@
 #error This port does not support 16 bit ticks.
 #endif
 
+#ifdef SOFTDEVICE_PRESENT
+#include "nrf_sd_def.h"
+/* The SoftDevice reserves GRTC compare channels and one GRTC interrupt group and says so in
+ * nrf_sd_def.h. An overlap would surface as a dead tick or a dead radio, whichever lost the race.
+ * Today the tick is CC4 on GRTC_2 and s145 holds CC7..CC11 on GRTC_3. */
+#if ((1UL << portNRF_GRTC_CC_CH) & SD_GRTC_CC_CHANNELS_USED)
+#error "FreeRTOS tick GRTC CC channel is reserved by the SoftDevice"
+#endif
+_Static_assert(portNRF_GRTC_IRQn != SD_GRTC_IRQn_USED,
+               "FreeRTOS tick GRTC interrupt group is reserved by the SoftDevice");
+#endif
+
 /*-----------------------------------------------------------*/
 
 /* Read the 52-bit GRTC SYSCOUNTER of this core's domain (NRF_GRTC_DOMAIN_INDEX is GRTC_IRQ_GROUP,

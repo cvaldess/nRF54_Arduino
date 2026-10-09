@@ -1,7 +1,7 @@
 # nRF54L Arduino Framework (s145 SoftDevice)
 
-Arduino BSP for Nordic Semiconductor nRF54L05 / nRF54L10 / nRF54L15 with the
-**s145 SoftDevice 9.0.0**. Derived from
+Arduino BSP for Nordic Semiconductor nRF54L05 / nRF54L10 / nRF54L15 /
+nRF54LM20A with the **s145 SoftDevice 10.0.1**. Derived from
 [Adafruit_nRF52_Arduino](https://github.com/adafruit/Adafruit_nRF52_Arduino)
 and reworked for nRF54L peripherals.
 
@@ -40,10 +40,11 @@ package, and toolchains automatically on first build.
 
 ## What's in here
 
-- **s145 SoftDevice 9.0.0** API headers and merge-time hex
-  (`cores/nRF5/nordic/softdevice/s145_nrf54l_9.0.0_API/`,
-  `bootloader/s145/9.0.0/*_softdevice.hex`)
-- **nRF54L MDK headers** for L05/L10/L15 application + flpr targets
+- **s145 SoftDevice 10.0.1** API headers and merge-time hex, split by SoC
+  family as upstream `sdk-nrf-bm` does
+  (`cores/nRF5/nordic/softdevice/s145_nrf54l{,m}_10.0.1_API/`,
+  `bootloader/s145/10.0.1/nrf54l{,m}/*_softdevice.hex`)
+- **nRF54L MDK headers** for L05/L10/L15/LM20A application + flpr targets
   (`cores/nRF5/nordic/nrfx/mdk/`)
 - **FreeRTOS port** running off the GRTC peripheral (nRF54L has no
   SysTick); see `cores/nRF5/freertos/portable/{GCC,CMSIS}/nrf54l/`
@@ -60,8 +61,8 @@ package, and toolchains automatically on first build.
   `NRF_GPIOTE` → `NRF_GPIOTE20`, etc.) so most of the Adafruit core code
   compiles unmodified
 - **`wiring_analog_nRF54L.c`** — dedicated SAADC implementation for
-  nRF54L (different reference voltage, multiplier gains, microsecond
-  TACQ, byte-count MAXCNT, structured PSELP)
+  nRF54L (different reference voltage, multiplier gains, TACQ in
+  125 ns steps, byte-count MAXCNT, structured PSELP)
 - **InternalFileSystem (LittleFS)** wired against
   `__flash_arduino_start` / `__flash_arduino_end` linker symbols, so no
   per-chip ifdefs in C++ code
@@ -79,13 +80,15 @@ of RRAM.
 
 | Chip | Bootloader | App FLASH | InternalFS (LittleFS) | DFU settings | SoftDevice |
 |---|---|---|---|---|---|
-| nRF54L05 | `0x0 – 0x8000` | `0x8000 – 0x47000` | `0x47000 – 0x4E000` | `0x4F000` | `0x58C00` |
-| nRF54L10 | `0x0 – 0x8000` | `0x8000 – 0xC7000` | `0xC7000 – 0xCE000` | `0xCF000` | `0xD8C00` |
-| nRF54L15 | `0x0 – 0x8000` | `0x8000 – 0x147000` | `0x147000 – 0x14E000` | `0x14F000` | `0x158C00` |
+| nRF54L05 | `0x0 – 0x8000` | `0x8000 – 0x47000` | `0x47000 – 0x4E000` | `0x4F000` | `0x5A800` |
+| nRF54L10 | `0x0 – 0x8000` | `0x8000 – 0xC7000` | `0xC7000 – 0xCE000` | `0xCF000` | `0xDA800` |
+| nRF54L15 | `0x0 – 0x8000` | `0x8000 – 0x147000` | `0x147000 – 0x14E000` | `0x14F000` | `0x15A800` |
+| nRF54LM20A | `0x0 – 0x8000` | `0x8000 – 0x1C9000` | `0x1C9000 – 0x1D1000` | `0x1D1000` | `0x1DA800` |
 
 RAM: `0x20000000 – 0x20004800` belongs to the SoftDevice, the application
 runs from `0x20004800` to `0x2003FF80`; the last 128 bytes hold the
-bootloader's BLE peer data and double-reset marker. The layout matches the
+bootloader's BLE peer data and double-reset marker. The nRF54LM20A has a
+second RAM bank at `0x20040000` that neither image uses yet. The layout matches the
 [nRF54_Bootloader](https://github.com/meshtastic/nRF54_Bootloader) linker
 scripts.
 

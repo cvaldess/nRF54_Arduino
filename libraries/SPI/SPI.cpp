@@ -101,6 +101,42 @@ void SPIClass::begin()
   if (initialized) return;
   initialized = true;
 
+  /* GPIO first, then PSEL, then enable -- the order nrfx uses.
+   *
+   * PIN_CNF resets to 0x2, i.e. input with the input buffer DISCONNECTED, so
+   * a pin the core never configures is deaf. MISO was never configured here
+   * at all, which leaves every read returning the over-read character however
+   * well the peripheral itself is set up. SCK needs its input buffer connected
+   * too: the reference manual requires it for the SPIM to work.
+   *
+   * SCK also has to start at the idle level its mode implies (low for modes 0
+   * and 1, high for 2 and 3) before it becomes an output, or the first clock
+   * edge after enable is a spurious one. */
+  const bool sck_idle_high = (_dataMode == SPI_MODE2) || (_dataMode == SPI_MODE3);
+
+  nrf_gpio_pin_write(_uc_pinSCK, sck_idle_high ? 1 : 0);
+  nrf_gpio_cfg(_uc_pinSCK,
+               NRF_GPIO_PIN_DIR_OUTPUT,
+               NRF_GPIO_PIN_INPUT_CONNECT,
+               NRF_GPIO_PIN_NOPULL,
+               NRF_GPIO_PIN_H0H1,
+               NRF_GPIO_PIN_NOSENSE);
+
+  nrf_gpio_pin_write(_uc_pinMosi, 0);
+  nrf_gpio_cfg(_uc_pinMosi,
+               NRF_GPIO_PIN_DIR_OUTPUT,
+               NRF_GPIO_PIN_INPUT_DISCONNECT,
+               NRF_GPIO_PIN_NOPULL,
+               NRF_GPIO_PIN_H0H1,
+               NRF_GPIO_PIN_NOSENSE);
+
+  nrf_gpio_cfg(_uc_pinMiso,
+               NRF_GPIO_PIN_DIR_INPUT,
+               NRF_GPIO_PIN_INPUT_CONNECT,
+               NRF_GPIO_PIN_NOPULL,
+               NRF_GPIO_PIN_S0S1,
+               NRF_GPIO_PIN_NOSENSE);
+
   // Configure pins
   nrf_spim_pins_set(_p_spim, _uc_pinSCK, _uc_pinMosi, _uc_pinMiso);
 
@@ -118,21 +154,6 @@ void SPIClass::begin()
 
   // Enable
   nrf_spim_enable(_p_spim);
-
-  // High drive for SCK and MOSI
-  nrf_gpio_cfg(_uc_pinSCK,
-               NRF_GPIO_PIN_DIR_OUTPUT,
-               NRF_GPIO_PIN_INPUT_CONNECT,
-               NRF_GPIO_PIN_NOPULL,
-               NRF_GPIO_PIN_H0H1,
-               NRF_GPIO_PIN_NOSENSE);
-
-  nrf_gpio_cfg(_uc_pinMosi,
-               NRF_GPIO_PIN_DIR_OUTPUT,
-               NRF_GPIO_PIN_INPUT_DISCONNECT,
-               NRF_GPIO_PIN_NOPULL,
-               NRF_GPIO_PIN_H0H1,
-               NRF_GPIO_PIN_NOSENSE);
 }
 
 void SPIClass::end()
@@ -256,10 +277,25 @@ void SPIClass::detachInterrupt() {
 }
 
 // nRF54L SPI instances: SPIM00 (mapped from NRF_SPIM0 via compat) and SPIM21 (mapped from NRF_SPIM2)
+//
+// A SPIM instance only reaches GPIOs in its own power domain: SPIM00 is on
+// P2, the SPIM2x instances on P1, SPIM30 on P0. Boards whose SPI header pins
+// are not on P2 must name a reachable instance in their variant.h, e.g.:
+//
+//     #define SPI_SPIM    NRF_SPIM23
+//
+#ifndef SPI_SPIM
+  #define SPI_SPIM          NRF_SPIM0
+#endif
+
+#ifndef SPI1_SPIM
+  #define SPI1_SPIM         NRF_SPIM2
+#endif
+
 #if SPI_INTERFACES_COUNT >= 1
-SPIClass SPI(NRF_SPIM0,  PIN_SPI_MISO,  PIN_SPI_SCK,  PIN_SPI_MOSI);
+SPIClass SPI(SPI_SPIM,  PIN_SPI_MISO,  PIN_SPI_SCK,  PIN_SPI_MOSI);
 #endif
 
 #if SPI_INTERFACES_COUNT >= 2
-SPIClass SPI1(NRF_SPIM2, PIN_SPI1_MISO, PIN_SPI1_SCK, PIN_SPI1_MOSI);
+SPIClass SPI1(SPI1_SPIM, PIN_SPI1_MISO, PIN_SPI1_SCK, PIN_SPI1_MOSI);
 #endif

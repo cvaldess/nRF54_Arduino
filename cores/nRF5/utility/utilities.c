@@ -41,10 +41,16 @@
 
 #include "nrf_sdm.h"
 
-/* nRF54L MBR size is 4KB (0x1000) */
-#ifndef MBR_SIZE
-#define MBR_SIZE 0x1000
-#endif
+/* The SoftDevice sits at the top of RRAM on nRF54L, not at MBR_SIZE like on
+ * nRF52, so its info struct is only reachable through this linker symbol
+ * (nrf54_common.ld documents it, the chip scripts set it). */
+extern uint32_t __softdevice_start__[];
+#define SOFTDEVICE_ADDR ((uint32_t) __softdevice_start__)
+
+/* nordic/sd_isr.S splits the SVC vector at a hardcoded 0x10, because that file
+ * is assembly and cannot include nrf_sdm.h. Tie the two together here. */
+_Static_assert(SDM_SVC_BASE == 0x10,
+               "SoftDevice SVC base moved; update SD_SVC_BASE in nordic/sd_isr.S");
 
 
 /******************************************************************************/
@@ -77,8 +83,8 @@ const char* getBootloaderVersion(void)
   // Skip if already created
   if ( fw_str[0] == 0 )
   {
-    uint32_t const sd_id      = SD_ID_GET(MBR_SIZE);
-    uint32_t const sd_version = SD_VERSION_GET(MBR_SIZE);
+    uint32_t const sd_id      = SD_ID_GET(SOFTDEVICE_ADDR);
+    uint32_t const sd_version = SD_VERSION_GET(SOFTDEVICE_ADDR);
 
     uint32_t const ver1 = sd_version / 1000000;
     uint32_t const ver2 = (sd_version % 1000000)/1000;

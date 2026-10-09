@@ -146,19 +146,54 @@ static inline bool _NRFX_IRQ_IS_PENDING(IRQn_Type irq_number)
 // Delay
 // ---------------------------------------------------------------------------
 
-/**
- * @brief When set to a non-zero value, this macro specifies that
- *        @ref nrfx_coredep_delay_us uses a precise DWT-based solution.
+/*
+ * nrfx_coredep_delay_us() spins on a SUBS/BHI pair and converts microseconds to
+ * iterations assuming NRFX_COREDEP_DELAY_US_LOOP_CYCLES (3) cycles per
+ * iteration. Executed from nRF54L's RRAM that loop costs closer to eight
+ * cycles, so the delay it produces is more than twice what was asked for.
+ *
+ * nrf54_delay_us() (cores/nRF5/delay.c) counts real cycles with the DWT cycle
+ * counter instead, which cannot be wrong about how long an instruction took,
+ * and falls back to the loop when the cycle counter is unavailable. Route the
+ * whole of nrfx through it, so a driver's NRFX_DELAY_US() and the sketch's
+ * delayMicroseconds() agree.
+ *
+ * NRFX_COREDEP_DELAY_DWT_BASED is deliberately left off: it would give nrfx
+ * the same DWT loop but with no fallback, and ARMv8-M makes
+ * DWT_CTRL.CYCCNTENA RAZ/WI when non-invasive debug is not permitted -- the
+ * counter then never advances and the wait never ends.
+ *
+ * NRFX_COREDEP_DELAY_US_LOOP_CYCLES is likewise left at the nrfx default of 3
+ * rather than corrected to the eight the loop really costs, which leaves the
+ * fallback running ~2.7x long. That is worth it: the fallback is only reached
+ * where the cycle counter is dead, long is the safe direction for a delay, and
+ * the eight is an instruction-fetch cost measured on an nRF54LM20A. The loop
+ * already scales itself by SystemCoreClock, so the constant is not about clock
+ * rate -- it is about how fast the part feeds the core from RRAM, and nobody
+ * has measured that on the nRF54L15 this core also builds for.
+ *
+ * Routing NRFX_DELAY_US() does not catch every nrfx delay. nrfy_grtc_prepare()
+ * calls nrfx_coredep_delay_us(93) directly -- upstream avoids the macro there
+ * because under Zephyr it would need a system timer that has not started yet
+ * -- and nrfx_cracen.c does the same twice for 1 us. None of the three are
+ * built in this configuration: the cracen pair sit inside
+ * NRFX_CRACEN_BSIM_SUPPORT, which is defined nowhere, and the GRTC call is
+ * reachable only from nrfx_grtc.c, whose every line is inside
+ * #if NRFX_CHECK(NRFX_GRTC_ENABLED) -- and nrfx_config.h sets that to 0. The
+ * uncorrected constant costs nothing as configured; it would start to matter
+ * if either driver were ever enabled.
  */
-#define NRFX_DELAY_DWT_BASED  0
+#include <lib/nrfx_coredep.h>
+
+#include <stdint.h>
+void nrf54_delay_us(uint32_t us);
 
 /**
  * @brief Macro for delaying the code execution for at least the specified time.
  *
  * @param us_time Number of microseconds to wait.
  */
-#include <lib/nrfx_coredep.h>
-#define NRFX_DELAY_US(us_time)  nrfx_coredep_delay_us(us_time)
+#define NRFX_DELAY_US(us_time)  nrf54_delay_us(us_time)
 
 // ---------------------------------------------------------------------------
 // Error codes

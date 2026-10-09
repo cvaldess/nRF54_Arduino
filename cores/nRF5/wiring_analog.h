@@ -120,7 +120,9 @@ extern void analogWriteResolution(uint8_t res);
  * See the chart of appropriate sample time vs. source resistance in the SAADC section
  * of the Nordic nrf52 product specification.
  *
- * \param time Should be set to 3, 5, 10, 15, 20 or 40.
+ * \param time In microseconds. On nRF52 it should be 3, 5, 10, 15, 20 or 40; on
+ * nRF54L any value from 1 to 40 is exact, larger values clamp to 40 and 0
+ * selects the 3us default.
  */
 extern void analogSampleTime(uint8_t sTime);
 

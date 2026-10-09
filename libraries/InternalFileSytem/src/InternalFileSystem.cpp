@@ -27,9 +27,10 @@
 
 // Chip-dependent, supplied by the linker script (nrf54_common.ld)
 extern "C" uint32_t __flash_arduino_start[];
+extern "C" uint32_t __flash_arduino_end[];
 #define LFS_FLASH_ADDR        ((uint32_t) __flash_arduino_start)
+#define LFS_FLASH_TOTAL_SIZE  ((uint32_t) __flash_arduino_end - (uint32_t) __flash_arduino_start)
 
-#define LFS_FLASH_TOTAL_SIZE  (7*FLASH_NRF52_PAGE_SIZE)
 #define LFS_BLOCK_SIZE        256
 
 //--------------------------------------------------------------------+

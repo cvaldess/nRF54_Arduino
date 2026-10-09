@@ -71,6 +71,9 @@ const uint8_t UUID128_CHR_DFU_REVISON[16] =
 
 extern "C" void bootloader_util_app_start(uint32_t start_addr);
 
+// Bootloader handover area (ORIGIN(NOINIT)), from the chip linker script
+extern "C" uint8_t __bootloader_peer_data[];
+
 static uint16_t crc16(const uint8_t* data_p, uint8_t length)
 {
   uint8_t x;
@@ -121,13 +124,14 @@ static void bledfu_control_wr_authorize_cb(uint16_t conn_hdl, BLECharacteristic*
       VERIFY_STATIC(offsetof(peer_data_t, crc16) == 60);
 
       /* Save Peer data
-       * Peer data address is defined in bootloader linker @0x20007F80
+       * Peer data address is the bootloader's ORIGIN(NOINIT), provided per chip
+       * by the linker script as __bootloader_peer_data (nrf54_common.ld)
        * - If bonded : save Security information
        * - Otherwise : save Address for direct advertising
        *
        * TODO may force bonded only for security reason
        */
-      peer_data_t* peer_data = (peer_data_t*) (0x20007F80UL);
+      peer_data_t* peer_data = (peer_data_t*) __bootloader_peer_data;
       varclr(peer_data);
 
       // Get CCCD

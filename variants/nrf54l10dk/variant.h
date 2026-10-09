@@ -145,6 +145,23 @@ static const uint8_t SCK  = PIN_SPI_SCK;
 #define PIN_WIRE_SDA         (37)  // P1.05  (or adjust per DK routing)
 #define PIN_WIRE_SCL         (38)  // P1.06
 
+/* TWIM22, not the core's default NRF_TWIM0.
+ *
+ * NRF_TWIM0 aliases to NRF_TWIM20 (nrf54l_compat.h), and TWIM20 is the same
+ * SERIAL20 instance that UARTE20 -- Serial2 -- uses. They cannot both exist:
+ * Wire's WIRE_IRQ_HANDLER and Uart.cpp's SERIAL2_IRQ_HANDLER both resolve to
+ * SERIAL20_IRQHandler, so any sketch that includes Wire on a DK fails to link
+ * with a duplicate symbol, and even without that they would be fighting over
+ * one peripheral.
+ *
+ * SERIAL22 reaches P1, which is where PIN_WIRE_SDA/SCL are, the same
+ * reasoning that puts Wire on TWIM22 for the XIAO variants. Untested on a DK;
+ * the alternative is a board on which Wire does not build at all. */
+#define WIRE_TWIM            NRF_TWIM22
+#define WIRE_TWIS            NRF_TWIS22
+#define WIRE_IRQN            SERIAL22_IRQn
+#define WIRE_IRQ_HANDLER     SERIAL22_IRQHandler
+
 #ifdef __cplusplus
 }
 #endif

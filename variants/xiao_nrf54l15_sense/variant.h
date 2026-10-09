@@ -24,8 +24,8 @@ extern "C"
 #endif // __cplusplus
 
 // Number of pins defined in PinDescription array
-#define PINS_COUNT           (24)
-#define NUM_DIGITAL_PINS     (24)
+#define PINS_COUNT           (27)
+#define NUM_DIGITAL_PINS     (27)
 #define NUM_ANALOG_INPUTS    (8)
 #define NUM_ANALOG_OUTPUTS   (0)
 
@@ -45,17 +45,23 @@ extern "C"
 #define PIN_BUTTON1          (17)  // P0.00
 
 /*
- * Analog pins — mapped to D0..D7 which correspond to SAADC-capable pins
- * (The XIAO maps A0..A7 to D0..D7)
+ * Analog pins
+ *
+ * SAADC AIN0..AIN7 are fixed to P1.04-P1.07 and P1.11-P1.14 on the nRF54L15
+ * (nrfx SAADC_EXTERNAL_AIN_PSELS; Seeed's pinout marks D0..D3 analog and
+ * P1.14 AIN7_VBAT). A0..A3 are D0..D3, but D4 (P1.10) and the P2 pins D6/D7
+ * have no analog input, so A4..A7 are not D4..D7:
+ *   A4 = D5 (P1.11), A5/A6 = P1.12/P1.13 (the Sense's PDM microphone clock
+ *   and data, not on the header), A7 = P1.14 (the VBAT divider).
  */
-#define PIN_A0               (0)
-#define PIN_A1               (1)
-#define PIN_A2               (2)
-#define PIN_A3               (3)
-#define PIN_A4               (4)
-#define PIN_A5               (5)
-#define PIN_A6               (6)
-#define PIN_A7               (7)
+#define PIN_A0               (0)   // D0 = P1.04 = AIN0
+#define PIN_A1               (1)   // D1 = P1.05 = AIN1
+#define PIN_A2               (2)   // D2 = P1.06 = AIN2
+#define PIN_A3               (3)   // D3 = P1.07 = AIN3
+#define PIN_A4               (5)   // D5 = P1.11 = AIN4
+#define PIN_A5               (25)  // P1.12 = AIN5 (PDM_CLK)
+#define PIN_A6               (26)  // P1.13 = AIN6 (PDM_DIN)
+#define PIN_A7               (24)  // P1.14 = AIN7 (VBAT_READ)
 
 static const uint8_t A0  = PIN_A0;
 static const uint8_t A1  = PIN_A1;
@@ -73,9 +79,25 @@ static const uint8_t A7  = PIN_A7;
  * Serial interfaces
  */
 
-// Serial1 — default UART on D6 (TX) / D7 (RX)
+// Serial1 — UARTE00 on D6 (TX) / D7 (RX). SERIAL00 is also the SPIM00
+// behind the default SPI on D8..D10, so Serial1 and SPI cannot run together.
 #define PIN_SERIAL1_TX      (6)   // P2.08
 #define PIN_SERIAL1_RX      (7)   // P2.07
+
+// Serial2 is the UART wired to the onboard SAMD11 USB-serial bridge (the
+// Zephyr board's console, uart20), so it -- not Serial1 -- is what a host
+// sees when the board is plugged in. The core's default UARTE20 reaches P1,
+// and nothing else in this variant uses SERIAL20 (Wire is on TWIM22).
+#define PIN_SERIAL2_TX      PIN_SAMD11_RX  // P1.09, nRF TX -> bridge RX
+#define PIN_SERIAL2_RX      PIN_SAMD11_TX  // P1.08, bridge TX -> nRF RX
+
+/*
+ * Map the plain `Serial` symbol (and SERIAL_PORT_MONITOR) onto Serial2 rather
+ * than the core's default of Serial1. Serial1 is D6/D7, which is not connected
+ * to the USB bridge and shares SERIAL00 with SPI. Serial1 stays available by
+ * name for anyone who does want D6/D7.
+ */
+#define SERIAL_PORT_CONSOLE  Serial2
 
 /*
  * SPI Interfaces
@@ -118,7 +140,19 @@ static const uint8_t SCK  = PIN_SPI_SCK;
 #define PIN_RF_SW            (21)  // P2.03 — RF switch power enable
 #define PIN_RF_SW_CTL        (22)  // P2.05 — RF path select (0=ceramic, 1=ext)
 #define PIN_VBAT_EN          (23)  // P1.15 — VBAT divider enable
-#define PIN_VBAT_READ        PIN_A7  // P1.14 — VBAT divider sense
+
+/*
+ * VBAT sense: P1.14 (AIN7) behind a 1:2 resistor divider that PIN_VBAT_EN
+ * switches on (drive it HIGH and let the divider settle before reading).
+ * The divider is a high-impedance source, so give the SAADC the longest
+ * acquisition time with analogSampleTime(40) first.
+ * The pin sees half the battery voltage, so scale the reading by 2, as
+ * Seeed's XIAO nRF54L15 battery example does:
+ *   mV = analogRead(PIN_VBAT_READ) * 3600 / 4096 * 2   (12-bit, AR_DEFAULT)
+ */
+#define PIN_VBAT_READ        (24)  // P1.14 — VBAT divider sense (AIN7)
+#define PIN_PDM_CLK          (25)  // P1.12 — Sense PDM microphone clock (AIN5)
+#define PIN_PDM_DIN          (26)  // P1.13 — Sense PDM microphone data (AIN6)
 
 #ifdef __cplusplus
 }

@@ -73,10 +73,25 @@ void Uart::begin(unsigned long baudrate, uint16_t config)
   // skip if already begun
   if ( _begun ) return;
 
+  /* Configure the pads before handing them to the UARTE.
+   *
+   * PIN_CNF resets to 0x2: input, with the input buffer DISCONNECTED. A pin
+   * the core never touches is therefore neither driven nor listened to, so TX
+   * emits nothing and RX hears nothing however correct PSEL and BAUDRATE are.
+   * TX is driven high first so the idle line is a mark rather than a break,
+   * exactly as nrfx_uarte's uarte_configure() does it. */
+  nrf_gpio_pin_set(uc_pinTX);
+  nrf_gpio_cfg_output(uc_pinTX);
+  nrf_gpio_cfg_input(uc_pinRX, NRF_GPIO_PIN_NOPULL);
+
   nrfUart->PSEL.TXD = uc_pinTX;
   nrfUart->PSEL.RXD = uc_pinRX;
 
   if (uc_hwFlow == 1) {
+    nrf_gpio_cfg_input(uc_pinCTS, NRF_GPIO_PIN_NOPULL);
+    nrf_gpio_pin_set(uc_pinRTS);
+    nrf_gpio_cfg_output(uc_pinRTS);
+
     nrfUart->PSEL.CTS = uc_pinCTS;
     nrfUart->PSEL.RTS = uc_pinRTS;
     nrfUart->CONFIG = config | (UARTE_CONFIG_HWFC_Enabled << UARTE_CONFIG_HWFC_Pos);
@@ -170,6 +185,15 @@ void Uart::end()
 
   nrfUart->PSEL.RTS = 0xFFFFFFFF;
   nrfUart->PSEL.CTS = 0xFFFFFFFF;
+
+  /* Hand the pads back as plain disconnected inputs so nothing is left driven
+   * once the UARTE no longer owns them. */
+  nrf_gpio_cfg_default(uc_pinTX);
+  nrf_gpio_cfg_default(uc_pinRX);
+  if (uc_hwFlow == 1) {
+    nrf_gpio_cfg_default(uc_pinCTS);
+    nrf_gpio_cfg_default(uc_pinRTS);
+  }
 
   rxBuffer.clear();
 

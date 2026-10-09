@@ -18,6 +18,7 @@ jobs:
           - nrf54l15dk
           - nrf54l10dk
           - nrf54l05dk
+          - xiao_nrf54lm20a
     steps:
       - name: Checkout framework
         uses: actions/checkout@v6
@@ -34,7 +35,7 @@ jobs:
             ~/.platformio/.cache
             ~/.platformio/packages
             ~/.platformio/platforms
-          key: pio-${{ runner.os }}-${{ hashFiles('tests/blink/platformio.ini') }}
+          key: pio-${{ runner.os }}-${{ hashFiles('tests/*/platformio.ini') }}
 
       - name: Install PlatformIO
         run: |
@@ -43,3 +44,9 @@ jobs:
 
       - name: Build blink for ${{ matrix.board }}
         run: pio run -d tests/blink -e ${{ matrix.board }}
+
+      # blink never links Bluefruit54Lib, so it cannot catch a break in the
+      # BLE OTA DFU path (e.g. the __bootloader_peer_data linker symbol BLEDfu
+      # references). tests/ble_dfu links that service on purpose.
+      - name: Build ble_dfu for ${{ matrix.board }}
+        run: pio run -d tests/ble_dfu -e ${{ matrix.board }}

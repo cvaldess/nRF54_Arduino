@@ -37,7 +37,7 @@
 #define BLE_MAX_CONNECTION        20 // SD support up to 20 connections
 
 // Allocate more memory for GATT table for chips with more RAM
-#if defined(NRF52840_XXAA) || defined(NRF52833_XXAA) || defined(NRF54L15_XXAA)
+#if defined(NRF52840_XXAA) || defined(NRF52833_XXAA) || defined(NRF54L15_XXAA) || defined(NRF54LM20A_XXAA)
   #define CFG_SD_ATTR_TABLE_SIZE    0x1000
 #elif defined(NRF54L10_XXAA) || defined(NRF54L05_XXAA)
   #define CFG_SD_ATTR_TABLE_SIZE    0xC00
