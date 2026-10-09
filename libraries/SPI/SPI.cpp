@@ -68,29 +68,25 @@ void SPIClass::_configure(uint8_t mode, uint8_t bitOrder)
 
 void SPIClass::_setFrequency(uint32_t freq)
 {
-  // nRF54L SPIM uses PRESCALER register: SPI_CLK = PCLK / PRESCALER
-  // PCLK is typically 128 MHz for nRF54L
-  // Prescaler must be even, minimum 2
-  uint32_t prescaler;
+  // SPI_CLK = core clock of this instance / PRESCALER. Only SPIM00 runs at 128 MHz (divisor 4..126);
+  // SPIM2x and SPIM30 run at 16 MHz (divisor 2..126), see SPIMnn_CORE_FREQUENCY and
+  // SPIMnn_PRESCALER_DIVISOR_RANGE_* in the MDK. The divisor is even and 7 bits wide, so the slowest
+  // clock is base / 126 (~1 MHz on SPIM00, ~127 kHz on the others).
+  uint32_t base = 16000000UL;
+  uint32_t prescaler_min = 2;
+#ifdef NRF_SPIM00
+  if (_p_spim == NRF_SPIM00) {
+    base = 128000000UL;
+    prescaler_min = 4;
+  }
+#endif
 
-  if (freq >= 32000000) {
-    prescaler = 4;       // 32 MHz
-  } else if (freq >= 16000000) {
-    prescaler = 8;       // 16 MHz
-  } else if (freq >= 8000000) {
-    prescaler = 16;      // 8 MHz
-  } else if (freq >= 4000000) {
-    prescaler = 32;      // 4 MHz
-  } else if (freq >= 2000000) {
-    prescaler = 64;      // 2 MHz
-  } else if (freq >= 1000000) {
-    prescaler = 128;     // 1 MHz
-  } else if (freq >= 500000) {
-    prescaler = 256;     // 500 kHz
-  } else if (freq >= 250000) {
-    prescaler = 512;     // 250 kHz
-  } else {
-    prescaler = 1024;    // 125 kHz
+  uint32_t prescaler = freq ? (base + freq - 1) / freq : SPIM_PRESCALER_DIVISOR_Max; // never faster than asked
+  prescaler = (prescaler + 1) & ~1UL;
+  if (prescaler < prescaler_min) {
+    prescaler = prescaler_min;
+  } else if (prescaler > SPIM_PRESCALER_DIVISOR_Max) {
+    prescaler = SPIM_PRESCALER_DIVISOR_Max;
   }
 
   nrf_spim_prescaler_set(_p_spim, prescaler);
