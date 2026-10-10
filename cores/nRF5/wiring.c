@@ -25,6 +25,7 @@
 nrf_nvic_state_t nrf_nvic_state;
 
 #define DFU_MAGIC_SERIAL_ONLY_RESET   0x4e
+#define DFU_MAGIC_UF2_RESET           0x57
 #define DFU_MAGIC_OTA_RESET           0xA8
 
 // Must match temp register in bootloader
@@ -104,6 +105,13 @@ void enterSerialDfu(void)
 void enterOTADfu(void)
 {
   reset_mcu(DFU_MAGIC_OTA_RESET);
+}
+
+// Bootloader with USB (nRF54LM20): CDC and the UF2 drive. Without USB the bootloader falls back
+// to serial DFU over its UART.
+void enterUf2Dfu(void)
+{
+  reset_mcu(DFU_MAGIC_UF2_RESET);
 }
 
 void waitForEvent(void)
