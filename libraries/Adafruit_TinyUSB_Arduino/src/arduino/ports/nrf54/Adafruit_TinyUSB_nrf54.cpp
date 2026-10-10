@@ -41,12 +41,8 @@
 // The core runs its peripheral interrupts at 3 alongside the SoftDevice
 #define USBHS_IRQ_PRIORITY 3
 
-// How long USB waits for the SoftDevice before starting on its own.
-// Meshtastic enables it about 10 s after boot.
-#define SOFTDEVICE_WAIT_MS 30000
-
-// Bring-up record, readable over SWD. Stage: 1 waiting for VBUS, 2 waiting
-// for the SoftDevice, 4 starting PCLK24M, 5 starting the stack, 6 running. The two times are millis() when PCLK24M was requested and
+// Bring-up record, readable over SWD. Stage: 1 waiting for VBUS, 4 starting
+// PCLK24M, 5 starting the stack, 6 running. The two times are millis() when PCLK24M was requested and
 // when the SoftDevice came up (0 = not yet).
 extern "C" volatile uint32_t tinyusb_nrf54_stage;
 extern "C" volatile uint32_t tinyusb_nrf54_pclk24m_ms;
@@ -114,15 +110,9 @@ static void usb_device_task(void *param) {
   }
   NRF_VREGUSB->EVENTS_VBUSDETECTED = 0;
 
-  // Wait for the SoftDevice to hold the HFXO before starting PCLK24M. Starting
-  // first works too, but releasing PCLK24M across sd_softdevice_enable() drops
-  // the USB connection once.
-  tinyusb_nrf54_stage = 2;
-  for (uint32_t waited = 0;
-       !softdevice_enabled && waited < SOFTDEVICE_WAIT_MS; waited += 100) {
-    vTaskDelay(pdMS_TO_TICKS(100));
-  }
-
+  // Start right away, before setup(), so a host can follow the boot log. When
+  // the SoftDevice comes up later, the hooks below hand the HFXO over to it,
+  // which drops USB off the bus once.
   tinyusb_nrf54_stage = 4;
   xo24m_requested = true;
   start_pclk24m();
@@ -143,15 +133,18 @@ static void usb_device_task(void *param) {
   }
 }
 
-// Called by Bluefruit right before sd_softdevice_enable(). If USB already runs
-// (the SoftDevice came up after SOFTDEVICE_WAIT_MS), let the HFXO stop so the
-// SoftDevice can start and tune it; USB drops off the bus until the
-// post-enable hook brings PCLK24M back.
+// Called by Bluefruit right before sd_softdevice_enable(). If USB already runs,
+// let the HFXO stop so the SoftDevice can start and tune it; USB leaves the bus
+// until the post-enable hook brings PCLK24M back. Detach first: with the clock
+// simply cut, the host keeps a port that has gone silent instead of seeing the
+// device leave, and a terminal never reconnects.
 extern "C" void usb_softdevice_pre_enable(void) {
   if (!xo24m_requested) {
     return;
   }
 
+  tud_disconnect();
+  vTaskDelay(pdMS_TO_TICKS(20));
   NVIC_DisableIRQ(USBHS_IRQn);
   NRF_CLOCK->TASKS_XO24MSTOP = 1;
   for (uint32_t i = 0;
@@ -167,6 +160,7 @@ extern "C" void usb_softdevice_post_enable(void) {
   if (xo24m_requested) {
     start_pclk24m();
     NVIC_EnableIRQ(USBHS_IRQn);
+    tud_connect();
   }
 }
 
