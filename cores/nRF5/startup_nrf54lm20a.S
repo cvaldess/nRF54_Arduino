@@ -89,8 +89,14 @@ g_pfnVectors:
     .word   Default_Handler
     /* IRQ 77: SERIAL00 (UARTE00/SPIM00/TWIM00) - Serial1 */
     .word   SERIAL00_IRQHandler
-    /* IRQ 78..132 */
-    .rept 55
+    /* IRQ 78..89 */
+    .rept 12
+    .word   Default_Handler
+    .endr
+    /* IRQ 90: USBHS - the TinyUSB port defines the handler when USB is used. */
+    .word   USBHS_IRQHandler
+    /* IRQ 91..132 */
+    .rept 42
     .word   Default_Handler
     .endr
     /* IRQ 133: TIMER10 - forwarded to the SoftDevice (nordic/sd_isr.S). */
@@ -417,6 +423,13 @@ QDEC21_IRQHandler:
     /* Serial2 is only instantiated when a variant defines PIN_SERIAL2_*;
      * Wire only claims SERIAL22 in target mode. Both slots still have to
      * resolve when the variant leaves them unused. */
+    /* USBHS: only claimed by the TinyUSB port (USE_TINYUSB). */
+    .weak USBHS_IRQHandler
+    .type USBHS_IRQHandler, %function
+USBHS_IRQHandler:
+    b .
+    .size USBHS_IRQHandler, .-USBHS_IRQHandler
+
     .weak SERIAL20_IRQHandler
     .type SERIAL20_IRQHandler, %function
 SERIAL20_IRQHandler:

@@ -52,6 +52,10 @@ static void loop_task(void* arg)
 {
   (void) arg;
 
+#ifdef USE_TINYUSB
+  TinyUSB_Device_Init(0);
+#endif
+
 #if CFG_DEBUG
   // If Serial is not begin(), call it to avoid hard fault
   if(!Serial) Serial.begin(115200);
