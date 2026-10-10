@@ -42,6 +42,7 @@
 uint32_t sd_app_ram_start_required = 0;
 #include "utility/bonding.h"
 
+extern "C" void usb_softdevice_pre_enable(void);
 extern "C" void usb_softdevice_post_enable(void);
 
 #ifndef CFG_BLE_TX_POWER_LEVEL
@@ -291,7 +292,8 @@ bool AdafruitBluefruit::begin(uint8_t prph_count, uint8_t central_count)
   #error Clock Source is not configured, define USE_LFXO or USE_LFRC according to your board in variant.h
 #endif
 
-  // Enable SoftDevice
+  // Enable SoftDevice. The USB port (TinyUSB, nRF54LM20) releases PCLK24M across it
+  usb_softdevice_pre_enable();
   extern uint32_t __softdevice_start__;
   sd_isr_forwarding_enable((uint32_t) &__softdevice_start__);
   uint32_t sd_err = sd_softdevice_enable(&clock_cfg, nrf_error_cb);
@@ -679,7 +681,11 @@ static volatile bool _seed_pending = false;
 // hands every other event to this hook, so a seed request it pulls out never reaches the SOC task
 // below: pass it on, waking the task through SD_EVT_IRQn. Weak: an application that reads the SoC
 // events itself can take them over.
-// Defined by the TinyUSB port on the nRF54LM20, which needs the HFXO held while USB runs
+// Defined by the TinyUSB port on the nRF54LM20, which has to hand the HFXO over to the SoftDevice
+extern "C" __attribute__((weak)) void usb_softdevice_pre_enable(void)
+{
+}
+
 extern "C" __attribute__((weak)) void usb_softdevice_post_enable(void)
 {
 }

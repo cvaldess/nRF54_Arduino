@@ -41,15 +41,19 @@
 // The core runs its peripheral interrupts at 3 alongside the SoftDevice
 #define USBHS_IRQ_PRIORITY 3
 
-// How long USB waits for the SoftDevice before starting PCLK24M on its own.
-// Meshtastic enables it about 4 s after boot.
-#define SOFTDEVICE_WAIT_MS 10000
+// How long USB waits for the SoftDevice before starting on its own.
+// Meshtastic enables it about 10 s after boot.
+#define SOFTDEVICE_WAIT_MS 30000
 
-// Bring-up stage, readable over SWD: 1 waiting for VBUS, 2 waiting for the
-// SoftDevice, 3 waiting for the HFXO through it, 4 waiting for PCLK24M,
-// 5 starting the stack, 6 running
+// Bring-up record, readable over SWD. Stage: 1 waiting for VBUS, 2 waiting
+// for the SoftDevice, 4 starting PCLK24M, 5 starting the stack, 6 running. The two times are millis() when PCLK24M was requested and
+// when the SoftDevice came up (0 = not yet).
 extern "C" volatile uint32_t tinyusb_nrf54_stage;
+extern "C" volatile uint32_t tinyusb_nrf54_pclk24m_ms;
+extern "C" volatile uint32_t tinyusb_nrf54_softdevice_ms;
 volatile uint32_t tinyusb_nrf54_stage = 0;
+volatile uint32_t tinyusb_nrf54_pclk24m_ms = 0;
+volatile uint32_t tinyusb_nrf54_softdevice_ms = 0;
 
 static volatile bool softdevice_enabled = false;
 static volatile bool xo24m_requested = false;
@@ -72,6 +76,27 @@ static bool vbus_present(void) {
   return (status & (1UL << 2)) != 0;
 }
 
+// PCLK24M keeps the HFXO running, and the SoftDevice, which starts the HFXO
+// itself (in sd_softdevice_enable() too) and waits for XOTUNED, never sees one
+// from a crystal that is already running and tuned (datasheet, PCLK24M and
+// HFXO): it spins there and the watchdog resets the chip. So once the
+// SoftDevice is up it holds the HFXO first, and PCLK24M is released across
+// sd_softdevice_enable() (see the hooks below).
+static void start_pclk24m(void) {
+  if (softdevice_enabled) {
+    uint32_t running = 0;
+    sd_clock_hfclk_request();
+    while (sd_clock_hfclk_is_running(&running) == NRF_SUCCESS && !running) {
+    }
+  }
+
+  tinyusb_nrf54_pclk24m_ms = millis();
+  NRF_CLOCK->EVENTS_XO24MSTARTED = 0;
+  NRF_CLOCK->TASKS_XO24MSTART = 1;
+  while (!NRF_CLOCK->EVENTS_XO24MSTARTED) {
+  }
+}
+
 // USB Device Driver task
 // This top level thread process all usb events and invoke callbacks
 static void usb_device_task(void *param) {
@@ -89,32 +114,18 @@ static void usb_device_task(void *param) {
   }
   NRF_VREGUSB->EVENTS_VBUSDETECTED = 0;
 
-  // PCLK24M keeps the HFXO running. A SoftDevice that later stops and
-  // restarts the HFXO then waits forever for an XOTUNED that a running, tuned
-  // crystal never raises again (datasheet, PCLK24M and HFXO). So the
-  // SoftDevice has to hold the HFXO first, and PCLK24M comes after.
+  // Wait for the SoftDevice to hold the HFXO before starting PCLK24M. Starting
+  // first works too, but releasing PCLK24M across sd_softdevice_enable() drops
+  // the USB connection once.
   tinyusb_nrf54_stage = 2;
   for (uint32_t waited = 0;
        !softdevice_enabled && waited < SOFTDEVICE_WAIT_MS; waited += 100) {
     vTaskDelay(pdMS_TO_TICKS(100));
   }
 
-  xo24m_requested = true;
-  if (softdevice_enabled) {
-    tinyusb_nrf54_stage = 3;
-    uint32_t running = 0;
-    sd_clock_hfclk_request();
-    while (sd_clock_hfclk_is_running(&running) == NRF_SUCCESS && !running) {
-      vTaskDelay(1);
-    }
-  }
-
   tinyusb_nrf54_stage = 4;
-  NRF_CLOCK->EVENTS_XO24MSTARTED = 0;
-  NRF_CLOCK->TASKS_XO24MSTART = 1;
-  while (!NRF_CLOCK->EVENTS_XO24MSTARTED) {
-    vTaskDelay(1);
-  }
+  xo24m_requested = true;
+  start_pclk24m();
 
   tinyusb_nrf54_stage = 5;
   const tusb_rhport_init_t rh_init = {
@@ -132,16 +143,30 @@ static void usb_device_task(void *param) {
   }
 }
 
+// Called by Bluefruit right before sd_softdevice_enable(). If USB already runs
+// (the SoftDevice came up after SOFTDEVICE_WAIT_MS), let the HFXO stop so the
+// SoftDevice can start and tune it; USB drops off the bus until the
+// post-enable hook brings PCLK24M back.
+extern "C" void usb_softdevice_pre_enable(void) {
+  if (!xo24m_requested) {
+    return;
+  }
+
+  NVIC_DisableIRQ(USBHS_IRQn);
+  NRF_CLOCK->TASKS_XO24MSTOP = 1;
+  for (uint32_t i = 0;
+       (NRF_CLOCK->XO.STAT & CLOCK_XO_STAT_STATE_Msk) && i < 100000; i++) {
+  }
+}
+
 // Called by Bluefruit right after sd_softdevice_enable()
 extern "C" void usb_softdevice_post_enable(void) {
   softdevice_enabled = true;
+  tinyusb_nrf54_softdevice_ms = millis();
 
   if (xo24m_requested) {
-    // Enabled after USB started PCLK24M: the HFXO is already running and
-    // tuned, so the SoftDevice's own start would never see XOTUNED. Hold it
-    // through the SoftDevice and retune, which raises XOTUNED again.
-    sd_clock_hfclk_request();
-    NRF_CLOCK->TASKS_XOTUNE = 1;
+    start_pclk24m();
+    NVIC_EnableIRQ(USBHS_IRQn);
   }
 }
 
