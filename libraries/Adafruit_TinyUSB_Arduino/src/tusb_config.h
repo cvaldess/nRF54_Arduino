@@ -35,6 +35,9 @@
 #elif defined(ARDUINO_NRF52_ADAFRUIT)
   #include "arduino/ports/nrf/tusb_config_nrf.h"
 
+#elif defined(ARDUINO_ARCH_NRF54)
+  #include "arduino/ports/nrf54/tusb_config_nrf54.h"
+
 #elif defined(ARDUINO_ARCH_RP2040)
   #include "arduino/ports/rp2040/tusb_config_rp2040.h"
 
