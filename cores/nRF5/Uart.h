@@ -108,7 +108,10 @@ extern Uart Serial1;
 extern Uart Serial2;
 #endif
 
-// On nRF52 BSPs the plain `Serial` symbol is the USB CDC port; nRF54L has
-// no USB peripheral, so map `Serial` onto the console UART so existing
-// Arduino sketches that print to `Serial` keep working.
+// On nRF52 BSPs the plain `Serial` symbol is the USB CDC port. Without USB
+// (nRF54L05/L10/L15, or TinyUSB not selected) map `Serial` onto the console
+// UART so existing Arduino sketches that print to `Serial` keep working; with
+// USE_TINYUSB (nRF54LM20 USBHS) the TinyUSB library declares it as the CDC port.
+#ifndef USE_TINYUSB
 #define Serial SERIAL_PORT_CONSOLE
+#endif

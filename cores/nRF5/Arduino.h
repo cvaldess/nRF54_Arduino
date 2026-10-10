@@ -60,6 +60,11 @@ void resumeLoop(void);
   #include "Uart.h"
 #endif
 
+#ifdef USE_TINYUSB
+// Needed for declaring Serial
+#include "Adafruit_USBD_CDC.h"
+#endif
+
 #include "delay.h"
 #include "binary.h"
 #include "common_inc.h"
