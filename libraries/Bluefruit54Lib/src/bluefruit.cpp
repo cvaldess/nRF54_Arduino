@@ -42,6 +42,15 @@
 uint32_t sd_app_ram_start_required = 0;
 #include "utility/bonding.h"
 
+// Defined by the TinyUSB port on the nRF54LM20, which has to hand the HFXO over to the SoftDevice
+extern "C" __attribute__((weak)) void usb_softdevice_pre_enable(void)
+{
+}
+
+extern "C" __attribute__((weak)) void usb_softdevice_post_enable(void)
+{
+}
+
 #ifndef CFG_BLE_TX_POWER_LEVEL
 #define CFG_BLE_TX_POWER_LEVEL    0
 #endif
@@ -257,10 +266,12 @@ void AdafruitBluefruit::configCentralBandwidth(uint8_t bw)
   }
 }
 
-bool AdafruitBluefruit::begin(uint8_t prph_count, uint8_t central_count)
+// Enables the SoftDevice, once. Shared by begin() and the TinyUSB port on the nRF54LM20, which enables it
+// before setup() so that it already holds the HFXO when USB starts PCLK24M (see Adafruit_TinyUSB_nrf54.cpp)
+extern "C" bool bluefruit_softdevice_enable(void)
 {
-  _prph_count    = prph_count;
-  _central_count = central_count;
+  static bool enabled = false;
+  if ( enabled ) return true;
 
   // Configure Clock
 #if defined( USE_LFXO )
@@ -289,12 +300,27 @@ bool AdafruitBluefruit::begin(uint8_t prph_count, uint8_t central_count)
   #error Clock Source is not configured, define USE_LFXO or USE_LFRC according to your board in variant.h
 #endif
 
-  // Enable SoftDevice
+  // Enable SoftDevice. The USB port (TinyUSB, nRF54LM20) releases PCLK24M across it
+  usb_softdevice_pre_enable();
   extern uint32_t __softdevice_start__;
   sd_isr_forwarding_enable((uint32_t) &__softdevice_start__);
   uint32_t sd_err = sd_softdevice_enable(&clock_cfg, nrf_error_cb);
   if ( sd_err != NRF_SUCCESS ) sd_isr_forwarding_disable();
   VERIFY_STATUS( sd_err, false );
+  enabled = true;
+
+  // The SoftDevice now owns the HFXO; the USB port (TinyUSB, nRF54LM20) has to request it here
+  usb_softdevice_post_enable();
+
+  return true;
+}
+
+bool AdafruitBluefruit::begin(uint8_t prph_count, uint8_t central_count)
+{
+  _prph_count    = prph_count;
+  _central_count = central_count;
+
+  VERIFY( bluefruit_softdevice_enable(), false );
 
   // sd_ble_enable() fails with INVALID_STATE until the RNG is seeded
   VERIFY( seed_softdevice_rng(), false );

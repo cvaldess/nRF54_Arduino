@@ -37,7 +37,12 @@
 #pragma GCC diagnostic ignored "-Wcast-align"
 #endif
 
+// nrfx 4 moved nrfx_coredep.h from soc/ to lib/
+#if __has_include(<soc/nrfx_coredep.h>)
 #include <soc/nrfx_coredep.h>
+#else
+#include <nrfx_coredep.h>
+#endif
 
 #ifdef __GNUC__
 #pragma GCC diagnostic pop
@@ -46,7 +51,7 @@
 #define DWC2_EP_MAX 16
 
 // Use the auto-resolving peripheral pointer (respects TrustZone secure/non-secure mapping)
-#if defined(NRF54LM20A_ENGA_XXAA)
+#if defined(NRF54LM20A_ENGA_XXAA) || defined(NRF54LM20A_XXAA)
   #define DWC2_REG_BASE ((uintptr_t)NRF_USBHSCORE)
 #else
   #define DWC2_REG_BASE ((uintptr_t)NRF_USBHSCORE0)
@@ -61,7 +66,7 @@ TU_ATTR_ALWAYS_INLINE static inline void dwc2_clock_init(uint8_t rhport, tusb_ro
   (void) rhport;
   (void) role;
 
-  #if defined(NRF54LM20A_ENGA_XXAA)
+  #if defined(NRF54LM20A_ENGA_XXAA) || defined(NRF54LM20A_XXAA)
   // Start the USB voltage regulator
   NRF_VREGUSB->TASKS_START = VREGUSB_TASKS_START_TASKS_START_Trigger;
 
