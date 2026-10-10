@@ -164,8 +164,18 @@ extern "C" void usb_softdevice_post_enable(void) {
   }
 }
 
+// Bluefruit (Bluefruit54Lib), when linked
+extern "C" bool bluefruit_softdevice_enable(void) __attribute__((weak));
+
 void TinyUSB_Port_InitDevice(uint8_t rhport) {
   (void)rhport;
+
+  // Called before setup(). Enabling the SoftDevice here lets it hold the HFXO
+  // before PCLK24M starts, so USB attaches once and never has to drop off the
+  // bus to hand the crystal over when the application starts BLE.
+  if (bluefruit_softdevice_enable) {
+    bluefruit_softdevice_enable();
+  }
 
   // Create a task for tinyusb device stack
   xTaskCreate(usb_device_task, "usbd", USBD_STACK_SZ, NULL, TASK_PRIO_HIGH,
