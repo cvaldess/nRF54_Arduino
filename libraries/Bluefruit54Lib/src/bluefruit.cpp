@@ -42,6 +42,8 @@
 uint32_t sd_app_ram_start_required = 0;
 #include "utility/bonding.h"
 
+extern "C" void usb_softdevice_post_enable(void);
+
 #ifndef CFG_BLE_TX_POWER_LEVEL
 #define CFG_BLE_TX_POWER_LEVEL    0
 #endif
@@ -295,6 +297,9 @@ bool AdafruitBluefruit::begin(uint8_t prph_count, uint8_t central_count)
   uint32_t sd_err = sd_softdevice_enable(&clock_cfg, nrf_error_cb);
   if ( sd_err != NRF_SUCCESS ) sd_isr_forwarding_disable();
   VERIFY_STATUS( sd_err, false );
+
+  // The SoftDevice now owns the HFXO; the USB port (TinyUSB, nRF54LM20) has to request it here
+  usb_softdevice_post_enable();
 
   // sd_ble_enable() fails with INVALID_STATE until the RNG is seeded
   VERIFY( seed_softdevice_rng(), false );
@@ -674,6 +679,11 @@ static volatile bool _seed_pending = false;
 // hands every other event to this hook, so a seed request it pulls out never reaches the SOC task
 // below: pass it on, waking the task through SD_EVT_IRQn. Weak: an application that reads the SoC
 // events itself can take them over.
+// Defined by the TinyUSB port on the nRF54LM20, which needs the HFXO held while USB runs
+extern "C" __attribute__((weak)) void usb_softdevice_post_enable(void)
+{
+}
+
 extern "C" __attribute__((weak)) void flash_nrf5x_soc_event_hook(uint32_t soc_evt)
 {
   if ( soc_evt != NRF_EVT_RAND_SEED_REQUEST ) return;
