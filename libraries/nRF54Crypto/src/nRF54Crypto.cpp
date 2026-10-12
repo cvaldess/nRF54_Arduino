@@ -29,6 +29,10 @@
 #include "nrf_cracen.h"
 #include "nrf_cracen_rng.h"
 
+#include <FreeRTOS.h>
+#include <semphr.h>
+#include <task.h>
+
 #include <tinycrypt/ecc.h>
 #include <tinycrypt/ecc_dh.h>
 #include <tinycrypt/ecc_platform_specific.h>
@@ -100,6 +104,30 @@ static void cracen_rng_stop(void)
     _rng_started = false;
 }
 
+// One draw at a time, and the TRNG runs only for the draw: no caller can leave it on and no task can
+// stop it under another one's draw. Readers are tasks (SoftDevice seed requests, LESC key generation,
+// the application), never interrupts.
+static SemaphoreHandle_t _rng_lock;
+static StaticSemaphore_t _rng_lock_buf;
+
+static void rng_lock(void)
+{
+    if (xTaskGetSchedulerState() == taskSCHEDULER_NOT_STARTED) return;
+    if (_rng_lock == NULL) {
+        vTaskSuspendAll();
+        if (_rng_lock == NULL) _rng_lock = xSemaphoreCreateMutexStatic(&_rng_lock_buf);
+        (void) xTaskResumeAll();
+    }
+    (void) xSemaphoreTake(_rng_lock, portMAX_DELAY);
+}
+
+static void rng_unlock(void)
+{
+    if (_rng_lock != NULL && xTaskGetSchedulerState() != taskSCHEDULER_NOT_STARTED) {
+        (void) xSemaphoreGive(_rng_lock);
+    }
+}
+
 // Readers run on different tasks (SoftDevice seed requests, LESC key generation). Another reader, or
 // a reset clearing the FIFO, between the level check and the read would hand out a word that is not
 // random, so the two happen in one critical section. Waiting for data stays outside it.
@@ -141,30 +169,34 @@ static bool cracen_rng_fill(uint8_t *dest, size_t len)
 // default_CSPRNG - called by TinyCrypt uECC
 //--------------------------------------------------------------------+
 
+static bool rng_draw(uint8_t *dest, size_t len)
+{
+    rng_lock();
+    bool ok = cracen_rng_start() && cracen_rng_fill(dest, len);
+    cracen_rng_stop();
+    rng_unlock();
+    return ok;
+}
+
 extern "C" int default_CSPRNG(uint8_t *dest, unsigned int size)
 {
-    // uECC also draws randomness during ECDH, which may run long after end() stopped the RNG
-    if (!_rng_started && !cracen_rng_start()) return 0;
-    return cracen_rng_fill(dest, size) ? 1 : 0;
+    return rng_draw(dest, size) ? 1 : 0;
 }
 
 //--------------------------------------------------------------------+
 // nRF54CryptoClass
 //--------------------------------------------------------------------+
 
+// The TRNG starts and stops around each draw (rng_draw), so begin() only registers it with uECC and
+// end() has nothing left to stop. Both stay for the callers that pair them.
 bool nRF54CryptoClass::begin(void)
 {
-    if (!cracen_rng_start()) return false;
-
-    // Register our RNG with uECC
     uECC_set_rng(default_CSPRNG);
-
     return true;
 }
 
 void nRF54CryptoClass::end(void)
 {
-    cracen_rng_stop();
 }
 
 bool nRF54CryptoClass::genKeyPair(uint8_t privkey[32], uint8_t pubkey[64])
@@ -181,7 +213,7 @@ bool nRF54CryptoClass::sharedSecret(const uint8_t peer_pubkey[64],
 
 bool nRF54CryptoClass::random(uint8_t* dest, size_t len)
 {
-    return cracen_rng_fill(dest, len);
+    return rng_draw(dest, len);
 }
 
 #endif // NRF_CRACEN
