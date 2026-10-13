@@ -68,6 +68,16 @@ static void cracen_rng_reset_if_halted(void)
     cracen_rng_control(false);
 }
 
+// Turns the generator and its module off, whether it got as far as starting or not
+static void cracen_rng_disable(void)
+{
+    nrf_cracen_rng_control_t cfg = { 0 };
+    cfg.enable = false;
+    nrf_cracen_rng_control_set(NRF_CRACENCORE, &cfg);
+
+    nrf_cracen_module_disable(NRF_CRACEN, NRF_CRACEN_MODULE_RNG_MASK);
+}
+
 static bool cracen_rng_start(void)
 {
     if (_rng_started) return true;
@@ -88,6 +98,9 @@ static bool cracen_rng_start(void)
         }
         cracen_rng_reset_if_halted();
     }
+
+    // The module is already on: a start that times out must not leave it running
+    cracen_rng_disable();
     return false;
 }
 
@@ -95,12 +108,7 @@ static void cracen_rng_stop(void)
 {
     if (!_rng_started) return;
 
-    // Disable RNG
-    nrf_cracen_rng_control_t cfg = { 0 };
-    cfg.enable = false;
-    nrf_cracen_rng_control_set(NRF_CRACENCORE, &cfg);
-
-    nrf_cracen_module_disable(NRF_CRACEN, NRF_CRACEN_MODULE_RNG_MASK);
+    cracen_rng_disable();
     _rng_started = false;
 }
 
