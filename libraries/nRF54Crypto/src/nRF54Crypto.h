@@ -42,7 +42,8 @@ public:
 
     // Fill buffer with random bytes from CRACEN TRNG. Call from a task, or before the scheduler
     // starts; not from an interrupt or inside a critical section, where waiting for another
-    // task's draw cannot work.
+    // task's draw cannot work. With the scheduler suspended it returns false while another task
+    // is drawing.
     bool random(uint8_t* dest, size_t len);
 };
 

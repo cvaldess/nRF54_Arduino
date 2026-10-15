@@ -41,28 +41,32 @@
 // Timeout for RNG FIFO fill (in loop iterations)
 #define RNG_TIMEOUT 100000
 
+// Words taken from the FIFO for the AES conditioning key (4 words, 128 bits)
+#define RNG_KEY_WORDS 4
+
 nRF54CryptoClass nRF54Crypto;
 
 //--------------------------------------------------------------------+
 // CRACEN RNG
 //--------------------------------------------------------------------+
 
-// Enable with 1x 128-bit block for AES conditioning
-static void cracen_rng_control(bool soft_reset)
+static bool _rng_key_loaded;
+
+// Soft reset, then enable with 1x 128-bit block for AES conditioning. As in
+// nrfx_cracen_entropy_get(), the first words out of the FIFO after each reset become the new
+// conditioning key (cracen_rng_word()).
+static void cracen_rng_reset(void)
 {
     nrf_cracen_rng_control_t cfg = { 0 };
+    cfg.soft_reset = true;
+    nrf_cracen_rng_control_set(NRF_CRACENCORE, &cfg);
+
+    cfg.soft_reset = false;
     cfg.enable = true;
     cfg.number_128_blocks = 1;
-    cfg.soft_reset = soft_reset;
     nrf_cracen_rng_control_set(NRF_CRACENCORE, &cfg);
-}
 
-// A halted generator needs a soft reset before it produces again
-static void cracen_rng_reset_if_halted(void)
-{
-    if (nrf_cracen_rng_fsm_state_get(NRF_CRACENCORE) != NRF_CRACEN_RNG_FSM_STATE_ERROR) return;
-    cracen_rng_control(true);
-    cracen_rng_control(false);
+    _rng_key_loaded = false;
 }
 
 // CRACEN->ENABLE also holds the CRYPTOMASTER and PKE/IKG bits, which an application may be using
@@ -78,7 +82,7 @@ static void cracen_rng_module_set(bool on)
     taskEXIT_CRITICAL();
 }
 
-// Turns the generator and its module off, whether it got as far as starting or not
+// Turns the generator and its module off
 static void cracen_rng_disable(void)
 {
     nrf_cracen_rng_control_t cfg = { 0 };
@@ -88,39 +92,34 @@ static void cracen_rng_disable(void)
     cracen_rng_module_set(false);
 }
 
-static bool cracen_rng_start(void)
+// Every draw starts from a reset, so it gets its own conditioning key
+static void cracen_rng_start(void)
 {
     cracen_rng_module_set(true);
-    cracen_rng_control(false);
-
-    // Wait for the FSM to leave RESET/STARTUP; a full FIFO parks it in IDLE_STANDBY (rings off)
-    uint32_t timeout = RNG_TIMEOUT;
-    while (timeout--) {
-        nrf_cracen_rng_fsm_state_t state = nrf_cracen_rng_fsm_state_get(NRF_CRACENCORE);
-        if (state == NRF_CRACEN_RNG_FSM_STATE_IDLE_READY ||
-            state == NRF_CRACEN_RNG_FSM_STATE_IDLE_STANDBY ||
-            state == NRF_CRACEN_RNG_FSM_STATE_FILL_FIFO) {
-            return true;
-        }
-        cracen_rng_reset_if_halted();
-    }
-
-    // The module is already on: a start that times out must not leave it running
-    cracen_rng_disable();
-    return false;
+    cracen_rng_reset();
 }
 
 // One draw at a time, and the TRNG runs only for the draw. The mutex is taken only while the
-// scheduler runs: before it starts, or while it is suspended, no other task can get in, and blocking
-// there would trip FreeRTOS's assert.
+// scheduler runs: before it starts no other task can get in, and blocking there, or while the
+// scheduler is suspended, would trip FreeRTOS's assert. With the scheduler suspended the draw fails
+// if another task holds the mutex: that task may be between the FIFO level check and the read, and
+// turning the TRNG off under it would hand it a word that isn't random.
 static StaticSemaphore_t _rng_lock_buf;
 static SemaphoreHandle_t _rng_lock = xSemaphoreCreateMutexStatic(&_rng_lock_buf);
 
-static bool rng_lock(void)
+static bool rng_lock(bool *locked)
 {
-    if (xTaskGetSchedulerState() != taskSCHEDULER_RUNNING) return false;
-    (void) xSemaphoreTake(_rng_lock, portMAX_DELAY);
-    return true;
+    *locked = false;
+    switch (xTaskGetSchedulerState()) {
+    case taskSCHEDULER_RUNNING:
+        (void) xSemaphoreTake(_rng_lock, portMAX_DELAY);
+        *locked = true;
+        return true;
+    case taskSCHEDULER_SUSPENDED:
+        return uxSemaphoreGetCount(_rng_lock) != 0;
+    default: // not started yet
+        return true;
+    }
 }
 
 static void rng_unlock(bool locked)
@@ -128,12 +127,27 @@ static void rng_unlock(bool locked)
     if (locked) (void) xSemaphoreGive(_rng_lock);
 }
 
+// Takes one word from the FIFO, or returns false while there is none yet. After a reset the first
+// RNG_KEY_WORDS words load the conditioning key instead. A generator halted on an error is reset and
+// starts again with a new key.
 static bool cracen_rng_word(uint32_t *word)
 {
-    if (nrf_cracen_rng_fifo_level_get(NRF_CRACENCORE) == 0) {
-        cracen_rng_reset_if_halted();
+    if (nrf_cracen_rng_fsm_state_get(NRF_CRACENCORE) == NRF_CRACEN_RNG_FSM_STATE_ERROR) {
+        cracen_rng_reset();
         return false;
     }
+
+    uint32_t level = nrf_cracen_rng_fifo_level_get(NRF_CRACENCORE);
+    if (!_rng_key_loaded) {
+        if (level < RNG_KEY_WORDS) return false;
+        for (uint8_t i = 0; i < RNG_KEY_WORDS; i++) {
+            nrf_cracen_rng_key_set(NRF_CRACENCORE, i, nrf_cracen_rng_fifo_get(NRF_CRACENCORE));
+        }
+        _rng_key_loaded = true;
+        level -= RNG_KEY_WORDS;
+    }
+
+    if (level == 0) return false;
     *word = nrf_cracen_rng_fifo_get(NRF_CRACENCORE);
     return true;
 }
@@ -163,13 +177,13 @@ static bool cracen_rng_fill(uint8_t *dest, size_t len)
 
 static bool rng_draw(uint8_t *dest, size_t len)
 {
-    bool locked = rng_lock();
-    // A failed start has already turned the TRNG off
-    bool ok = cracen_rng_start();
-    if (ok) {
-        ok = cracen_rng_fill(dest, len);
-        cracen_rng_disable();
-    }
+    bool locked;
+    if (!rng_lock(&locked)) return false;
+
+    cracen_rng_start();
+    bool ok = cracen_rng_fill(dest, len);
+    cracen_rng_disable();
+
     rng_unlock(locked);
     return ok;
 }
