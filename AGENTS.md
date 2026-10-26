@@ -144,12 +144,10 @@ bootloader/s145/10.0.1/nrf54l/s145_nrf54l{05,10,15}_10.0.1_softdevice.hex
 ```
 
 The board JSON picks the family with `build.softdevice.sd_family` and the
-hex with `build.softdevice.sd_soc`. Another family (`nrf54lm` for the
-nRF54LM20A) gets its own API directory and hex directory next to these.
+hex with `build.softdevice.sd_soc`.
 
 `nrf_nvic.h` in the API directory is a hand-written shim, not a Nordic
-file; when a second family's API directory is added, keep the two copies
-in sync.
+file; carry it over when the SoftDevice is updated.
 
 ### XIAO Wire routes to TWIM22
 
@@ -186,7 +184,7 @@ cores/nRF5/                  - core sources (Arduino API + FreeRTOS port + nrfx 
     nrfx/                    - upstream Nordic nrfx (mostly dead via guards)
       drivers/src/*.c        - all wrapped in #if NRFX_<X>_ENABLED
     nrfx_config.h            - one place to flip drivers on/off
-    softdevice/s145_nrf54l{,m}_10.0.1_API/ - SoftDevice headers, per SoC family
+    softdevice/s145_nrf54l_10.0.1_API/ - SoftDevice headers
 libraries/                   - PIO LDF-discovered bundled libs
   Bluefruit54Lib             - BLE API on top of s145
   nRF54Crypto                - CRACEN + TinyCrypt for LESC (replaces CC310)
